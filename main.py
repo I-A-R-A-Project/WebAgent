@@ -9,7 +9,6 @@ Ejecutar con: python main.py
 
 import sys
 import os
-import re
 import shutil
 import html as html_escape_module
 from pathlib import Path
@@ -32,15 +31,21 @@ from file_ops import GitVersioning
 from profiles import ProfileManager, NewProfileDialog
 from collections_manager import CollectionManager, NewCollectionDialog, SaveToCollectionDialog
 from downloads import DownloadDialog
-from iara_common.json_store import SidebarAppsStore
-from iara_common.session import load_tab_session, save_tab_session
-from iara_common.sidebar import AppPanelOverlay, SidebarContainer, SidebarRail
-from iara_common import local_viewer
-from iara_common.pdf_tab import PdfTab
-from iara_common.tabs import VIDEO_EXTS, UnifiedWebTab
-from iara_common.video_tab import VideoTab
-from iara_common.web_profiles import build_web_profile
-from codex_manager import CodexManagerDialog
+from web_common.json_store import SidebarAppsStore
+from web_common.navbar import BasicNavbar, address_to_url, save_web_page
+from web_common.session import (
+    is_navigation_title,
+    load_tab_session,
+    restore_tab_metadata,
+    save_tab_session,
+)
+from web_common.sidebar import AppPanelOverlay, SidebarContainer, SidebarRail
+from web_common import local_viewer
+from web_common.pdf_tab import PdfTab
+from web_common.tabs import VIDEO_EXTS, UnifiedWebTab
+from web_common.video_tab import VideoTab
+from web_common.web_profiles import build_web_profile
+from codex_manager import AIAgentsDialog
 
 
 class IABrowser(QMainWindow):
@@ -340,8 +345,12 @@ class IABrowser(QMainWindow):
 
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
+        self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.tabs.tabBarClicked.connect(self._on_tab_bar_clicked)
+        self.tabs.tabBar().tabMoved.connect(self._on_tab_moved)
+        self._setup_plus_tab()
         right_layout.addWidget(self.tabs)
 
         right_container = QWidget()
@@ -349,57 +358,33 @@ class IABrowser(QMainWindow):
         parent_layout.addWidget(right_container, 1)
 
     def _create_navbar(self) -> QToolBar:
-        navbar = QToolBar("Navigation")
+        navbar = BasicNavbar(self)
+        navbar.on_back = lambda: self.current_webview().back()
+        navbar.on_forward = lambda: self.current_webview().forward()
+        navbar.on_reload = lambda: self.current_webview().reload()
+        navbar.on_stop = lambda: self.current_webview().stop()
+        navbar.on_address_bar_enter = self._on_address_bar_enter
+        navbar.on_save_page = lambda: save_web_page(
+            self.current_webview(),
+            target_dir=self.profile_manager.base_dir / "saved_pages",
+            status_callback=self.statusBar().showMessage,
+        )
 
-        back_action = QAction("◀", self)
-        back_action.triggered.connect(lambda: self.current_webview().back())
-        back_action.setShortcut(QKeySequence.StandardKey.Back)
-        navbar.addAction(back_action)
+        # Guardar referencias
+        self.address_bar = navbar.address_bar
+        
+        # Agregar botones específicos de IA
+        self.collection_action = QAction("☆", navbar)
+        self.collection_action.setToolTip("Guardar página en Colección")
+        self.collection_action.triggered.connect(self._save_current_to_collection)
+        navbar.addAction(self.collection_action)
 
-        fwd_action = QAction("▶", self)
-        fwd_action.triggered.connect(lambda: self.current_webview().forward())
-        fwd_action.setShortcut(QKeySequence.StandardKey.Forward)
-        navbar.addAction(fwd_action)
-
-        reload_action = QAction("🔄", self)
-        reload_action.triggered.connect(lambda: self.current_webview().reload())
-        reload_action.setShortcut(QKeySequence.StandardKey.Refresh)
-        navbar.addAction(reload_action)
-
-        stop_action = QAction("⏹", self)
-        stop_action.triggered.connect(lambda: self.current_webview().stop())
-        navbar.addAction(stop_action)
-
-        navbar.addSeparator()
-
-        home_action = QAction("🏠", self)
-        home_action.triggered.connect(self.go_home)
-        navbar.addAction(home_action)
-
-        new_tab_action = QAction("+ Tab", self)
-        new_tab_action.setToolTip("Nueva pestaña con el perfil Default")
-        new_tab_action.setShortcut("Ctrl+T")
-        new_tab_action.triggered.connect(self._open_new_default_tab)
-        navbar.addAction(new_tab_action)
-
-        navbar.addSeparator()
-
-        self.address_bar = QLineEdit()
-        self.address_bar.setPlaceholderText("URL...")
-        self.address_bar.returnPressed.connect(self._on_address_bar_enter)
-        navbar.addWidget(self.address_bar)
-
-        save_theme_action = QAction("⭐ Colección", self)
-        save_theme_action.setToolTip("Guardar esta página en una Colección")
-        save_theme_action.triggered.connect(self._save_current_to_collection)
-        navbar.addAction(save_theme_action)
-
-        open_files_action = QAction("📁", self)
+        open_files_action = QAction("📁", navbar)
         open_files_action.setToolTip("Abrir carpeta de archivos activa")
         open_files_action.triggered.connect(self._open_current_folder)
         navbar.addAction(open_files_action)
 
-        attach_action = QAction("📎", self)
+        attach_action = QAction("📎", navbar)
         attach_action.setToolTip(
             "Copia el archivo a la carpeta de la Colección activa (o del perfil) y\n"
             "además intenta pegarlo (Ctrl+V) en el chat actual. Hacé clic en\n"
@@ -424,6 +409,7 @@ class IABrowser(QMainWindow):
             qt_profile,
             parent_window=self,
             folder_view_handler=self._render_folder_view,
+            new_tab_handler=self._handle_new_tab_request,
             new_window_handler=self._handle_new_window_request,
             url_changed_handler=self._on_tab_url_changed,
             title_changed_handler=self._on_tab_title_changed,
@@ -433,19 +419,47 @@ class IABrowser(QMainWindow):
 
         self.tab_data[id(webview)] = {"profile_id": profile_id, "collection_id": collection_id}
 
-        tab_index = self.tabs.addTab(webview, "Nueva pestaña")
+        insert_at = self.tabs.indexOf(self.plus_widget)
+        tab_index = self.tabs.insertTab(insert_at, webview, "Nueva pestaña")
         self.tabs.setCurrentIndex(tab_index)
         return webview
+
+    def _handle_new_tab_request(self):
+        return self._add_tab(profile_id=self.current_profile_id).page()
+
+    def _setup_plus_tab(self):
+        self.plus_widget = QWidget()
+        index = self.tabs.addTab(self.plus_widget, "+")
+        bar = self.tabs.tabBar()
+        bar.setTabButton(index, bar.ButtonPosition.RightSide, None)
+        bar.setTabButton(index, bar.ButtonPosition.LeftSide, None)
+
+    def _on_tab_bar_clicked(self, index: int):
+        if self.tabs.widget(index) is self.plus_widget:
+            self._open_new_default_tab()
+
+    def _on_tab_moved(self, from_index: int, to_index: int):
+        plus_index = self.tabs.indexOf(self.plus_widget)
+        last = self.tabs.count() - 1
+        if plus_index != last:
+            self.tabs.tabBar().moveTab(plus_index, last)
 
     def _on_tab_url_changed(self, webview, url: QUrl):
         if webview is not self.current_webview():
             return
         self.current_url = url.toString()
         self.address_bar.setText(self.current_url)
+        self._refresh_collection_icon(self.current_url)
 
     def _on_tab_title_changed(self, webview, title: str):
         index = self.tabs.indexOf(webview)
         if index >= 0:
+            session_title = webview.property("_session_title")
+            if is_navigation_title(title) and session_title:
+                self.tabs.setTabText(index, session_title)
+                return
+            if not is_navigation_title(title):
+                webview.setProperty("_session_title", "")
             self.tabs.setTabText(index, (title or "Nueva pestaña")[:30])
 
     def _on_tab_icon_changed(self, webview, icon):
@@ -470,18 +484,30 @@ class IABrowser(QMainWindow):
         return webview
 
     def _close_tab(self, index: int):
-        if self.tabs.count() > 1:
-            widget = self.tabs.widget(index)
-            self.tab_data.pop(id(widget), None)
-            self.tabs.removeTab(index)
-            if isinstance(widget, VideoTab):
-                widget.stop()
-            widget.deleteLater()
-        else:
-            QMessageBox.information(self, "Información", "Debe haber al menos una pestaña abierta")
+        if self.tabs.widget(index) is self.plus_widget:
+            return
 
-    def current_webview(self) -> QWebEngineView:
-        return self.tabs.currentWidget()
+        widget = self.tabs.widget(index)
+        self.tab_data.pop(id(widget), None)
+        self.tabs.removeTab(index)
+        if isinstance(widget, VideoTab):
+            widget.stop()
+        widget.deleteLater()
+
+        if self.tabs.count() <= 1:
+            self._open_new_default_tab()
+
+    def current_webview(self) -> QWebEngineView | None:
+        """Return active web tab, never the '+' placeholder widget."""
+        current = self.tabs.currentWidget()
+        if isinstance(current, QWebEngineView):
+            return current
+
+        for index in range(self.tabs.count() - 1, -1, -1):
+            widget = self.tabs.widget(index)
+            if isinstance(widget, QWebEngineView):
+                return widget
+        return None
 
     def _on_tab_changed(self, index: int):
         """Al cambiar de pestaña, sincroniza el combo de perfiles y la
@@ -489,7 +515,7 @@ class IABrowser(QMainWindow):
         if index < 0:
             return
         webview = self.tabs.widget(index)
-        if webview is None:
+        if webview is None or webview is self.plus_widget:
             return
         meta = self.tab_data.get(id(webview), {})
         self.current_profile_id = meta.get("profile_id", self.current_profile_id)
@@ -497,9 +523,10 @@ class IABrowser(QMainWindow):
 
         self.current_url = webview.url().toString()
         self.address_bar.setText(self.current_url)
+        self._refresh_collection_icon(self.current_url)
 
-    def _on_address_bar_enter(self):
-        self.load_url(self.address_bar.text())
+    def _on_address_bar_enter(self, text: str):
+        self.load_url(text)
 
     def _on_url_changed(self, url: QUrl):
         webview = self.sender()
@@ -548,27 +575,11 @@ class IABrowser(QMainWindow):
     # Navigation helpers
     # ------------------------------------------------------------------
 
-    _WINDOWS_PATH_RE = re.compile(r"^[a-zA-Z]:[\\/]")
-
-    def _looks_like_local_path(self, text: str) -> bool:
-        return (
-            text.startswith("file://")
-            or bool(self._WINDOWS_PATH_RE.match(text))
-            or text.startswith("/")
-            or text.startswith("~")
-        )
-
     def load_url(self, url: str):
-        text = url.strip()
-        if not text:
+        target = address_to_url(url)
+        if target is None:
             return
-        if self._looks_like_local_path(text):
-            local_path = QUrl(text).toLocalFile() if text.startswith("file://") else os.path.expanduser(text)
-            self.current_webview().setUrl(QUrl.fromLocalFile(local_path))
-            return
-        if not text.startswith(("http://", "https://", "file://")):
-            text = f"https://{text}"
-        self.current_webview().setUrl(QUrl(text))
+        self.current_webview().setUrl(target)
 
     def go_home(self):
         webview = self.current_webview()
@@ -721,59 +732,59 @@ class IABrowser(QMainWindow):
             git_html = '<div class="git-status muted">🔀 Esta carpeta no es un repositorio git</div>'
 
         return f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  * {{ box-sizing: border-box; }}
-  body {{
-    margin: 0; padding: 0;
-    font-family: -apple-system, "Segoe UI", Arial, sans-serif;
-    background: #1e1e1e; color: #e6e6e6;
-  }}
-  header {{
-    padding: 14px 20px; border-bottom: 1px solid #3a3a3a;
-    font-size: 14px; color: #a0a0a0; word-break: break-all;
-  }}
-  .columns {{ display: flex; height: calc(100vh - 52px); }}
-  .col {{ width: 50%; overflow-y: auto; padding: 12px 16px; }}
-  .col-left {{ border-right: 1px solid #3a3a3a; }}
-  .col h2 {{
-    font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
-    color: #888; margin: 0 0 10px 0;
-  }}
-  a.entry {{
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 7px 10px; border-radius: 6px; color: #e6e6e6;
-    text-decoration: none; font-size: 13.5px;
-  }}
-  a.entry:hover {{ background: #2c2c2c; }}
-  a.entry.dir {{ font-weight: 600; }}
-  .size {{ color: #888; font-size: 11.5px; margin-left: 12px; white-space: nowrap; }}
-  .empty {{ color: #777; font-size: 13px; padding: 8px 10px; }}
-  .git-status {{ font-size: 12.5px; color: #a0a0a0; margin-bottom: 10px; }}
-  .git-status.muted {{ color: #666; }}
-  .commit {{
-    font-size: 12.5px; font-family: "SF Mono", Consolas, monospace;
-    padding: 6px 10px; border-radius: 6px; color: #d0d0d0;
-  }}
-  .commit:hover {{ background: #2c2c2c; }}
-</style>
-</head>
-<body>
-  <header>📁 {esc(str(folder))}</header>
-  <div class="columns">
-    <div class="col col-left">
-      <h2>Contenido</h2>
-      {files_html}
-    </div>
-    <div class="col col-right">
-      <h2>Historial de Git</h2>
-      {git_html}
-    </div>
-  </div>
-</body>
-</html>"""
+            <html>
+            <head>
+            <meta charset="utf-8">
+            <style>
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0; padding: 0;
+                font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+                background: #1e1e1e; color: #e6e6e6;
+            }}
+            header {{
+                padding: 14px 20px; border-bottom: 1px solid #3a3a3a;
+                font-size: 14px; color: #a0a0a0; word-break: break-all;
+            }}
+            .columns {{ display: flex; height: calc(100vh - 52px); }}
+            .col {{ width: 50%; overflow-y: auto; padding: 12px 16px; }}
+            .col-left {{ border-right: 1px solid #3a3a3a; }}
+            .col h2 {{
+                font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+                color: #888; margin: 0 0 10px 0;
+            }}
+            a.entry {{
+                display: flex; justify-content: space-between; align-items: center;
+                padding: 7px 10px; border-radius: 6px; color: #e6e6e6;
+                text-decoration: none; font-size: 13.5px;
+            }}
+            a.entry:hover {{ background: #2c2c2c; }}
+            a.entry.dir {{ font-weight: 600; }}
+            .size {{ color: #888; font-size: 11.5px; margin-left: 12px; white-space: nowrap; }}
+            .empty {{ color: #777; font-size: 13px; padding: 8px 10px; }}
+            .git-status {{ font-size: 12.5px; color: #a0a0a0; margin-bottom: 10px; }}
+            .git-status.muted {{ color: #666; }}
+            .commit {{
+                font-size: 12.5px; font-family: "SF Mono", Consolas, monospace;
+                padding: 6px 10px; border-radius: 6px; color: #d0d0d0;
+            }}
+            .commit:hover {{ background: #2c2c2c; }}
+            </style>
+            </head>
+            <body>
+            <header>📁 {esc(str(folder))}</header>
+            <div class="columns">
+                <div class="col col-left">
+                <h2>Contenido</h2>
+                {files_html}
+                </div>
+                <div class="col col-right">
+                <h2>Historial de Git</h2>
+                {git_html}
+                </div>
+            </div>
+            </body>
+            </html>"""
 
     def _resolve_target_folder(self, tab_meta: dict) -> tuple[str, str]:
         """Devuelve (carpeta, etiqueta) según: primero la Colección de la
@@ -904,7 +915,7 @@ class IABrowser(QMainWindow):
         git_action = menu.addAction(
             "✅ Git: sobrescribir (activado)" if git_on else "☐ Git: sobrescribir (desactivado)"
         )
-        codex_action = menu.addAction("🤖 Codex Manager...")
+        codex_action = menu.addAction("🤖 Agentes IA...")
         delete_action = menu.addAction("Eliminar perfil")
         if data.get("is_default"):
             delete_action.setEnabled(False)
@@ -929,7 +940,7 @@ class IABrowser(QMainWindow):
 
     def _open_codex_manager(self, folder: str):
         Path(folder).mkdir(parents=True, exist_ok=True)
-        dialog = CodexManagerDialog(self, folder)
+        dialog = AIAgentsDialog(self, folder)
         dialog.exec()
 
     def _change_profile_home(self, profile_id: str):
@@ -1141,7 +1152,12 @@ class IABrowser(QMainWindow):
         data = self.tab_data.get(id(webview), {})
         profile_id = data.get("profile_id", self.current_profile_id)
 
-        dialog = SaveToCollectionDialog(self, self.collection_manager.collections)
+        dialog = SaveToCollectionDialog(
+            self,
+            self.collection_manager.collections,
+            current_url=self.current_url,
+            collection_manager=self.collection_manager
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
@@ -1155,7 +1171,19 @@ class IABrowser(QMainWindow):
 
         self.collection_manager.add_item(collection_id, self.current_url, title, profile_id)
         self._load_collections_list()
+        self._refresh_collection_icon(self.current_url)
         self.statusBar().showMessage("Página agregada a la Colección", 4000)
+
+    def _refresh_collection_icon(self, url: str):
+        """Actualiza el ícono de colección (☆/★) según si la URL está en alguna colección."""
+        is_in_collection = False
+        for collection in self.collection_manager.collections:
+            col_data = self.collection_manager.get_collection(collection["id"])
+            if col_data and any(item["url"] == url for item in col_data.get("items", [])):
+                is_in_collection = True
+                break
+        
+        self.collection_action.setText("★" if is_in_collection else "☆")
 
     def _on_collection_tree_item_clicked(self, item: QTreeWidgetItem, column: int):
         """Maneja los 3 tipos de nodo del árbol: Colección (expande/
@@ -1231,7 +1259,7 @@ class IABrowser(QMainWindow):
             git_action = menu.addAction(
                 "✅ Git: sobrescribir (activado)" if git_on else "☐ Git: sobrescribir (desactivado)"
             )
-            codex_action = menu.addAction("🤖 Codex Manager...")
+            codex_action = menu.addAction("🤖 Agentes IA...")
             if not (collection and collection.get("download_dir")):
                 codex_action.setEnabled(False)
                 codex_action.setToolTip("Asigná primero una carpeta de descarga a esta Colección")
@@ -1347,7 +1375,7 @@ class IABrowser(QMainWindow):
     def closeEvent(self, event):
         self._save_session()
         self.profile_manager.save_profiles()
-        self.collection_manager.save_themes()
+        self.collection_manager.save_collections()
         event.accept()
 
     # ------------------------------------------------------------------
@@ -1386,7 +1414,14 @@ class IABrowser(QMainWindow):
             return False
 
         for t in valid_tabs:
+            if t["url"].startswith("file://"):
+                local_path = QUrl(t["url"]).toLocalFile()
+                if os.path.splitext(local_path)[1].lower() == ".pdf":
+                    pdf_tab = self.open_pdf_tab(local_path)
+                    restore_tab_metadata(self.tabs, self.tabs.indexOf(pdf_tab), t)
+                    continue
             webview = self._add_tab(profile_id=t["profile_id"], collection_id=t.get("collection_id"))
+            restore_tab_metadata(self.tabs, self.tabs.indexOf(webview), t)
             webview.setUrl(QUrl(t["url"]))
 
         active = session.get("active_profile_id")
@@ -1423,5 +1458,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
