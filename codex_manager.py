@@ -1,29 +1,36 @@
 """
-codex_manager.py - "Codex Manager" para IA Browser.
+codex_manager.py - "Agentes IA" para IA Browser.
 
 Le permite, para cualquier carpeta versionada con git (perfil o
-Colección):
-  1. Conectar un repositorio remoto que el usuario ya creó a mano en
-     GitHub (u otro host), pegando su URL HTTPS o SSH — sin manejar
-     tokens: usa las credenciales de git que ya estén configuradas en
-     el sistema (SSH key, credential manager, etc).
-  2. Configurar una rama "cruda" (donde caen los commits automáticos de
-     IA Browser al descargar archivos — muchas veces con clutter de
-     agregar/eliminar el mismo archivo varias veces) y una rama
-     "limpia" de destino.
-  3. Ejecutar Codex CLI (`codex exec`) para que analice esa rama cruda
-     y genere commits prolijos, agrupados y con mensajes descriptivos
-     en la rama limpia — sin duplicar mensajes de commit.
+Colección), desde un diálogo con pestañas:
+  - Config: conectar un repositorio remoto que el usuario ya creó a
+    mano en GitHub (u otro host, pegando su URL HTTPS o SSH — sin
+    manejar tokens, usa las credenciales de git ya configuradas en el
+    sistema) y configurar una rama "cruda" (donde caen los commits
+    automáticos de IA Browser al descargar archivos) y una rama
+    "limpia" de destino.
+  - Codex: revisa/reescribe el historial de la rama cruda y arma
+    commits prolijos y descriptivos en la rama limpia.
+  - Copilot: solo lee código para entender el proyecto, pero
+    únicamente crea o modifica documentación (README, AGENTS.md, .txt,
+    etc) — nunca código fuente.
+
+
+Cada agente tiene su propio comando (editable) y su propio prompt
+(generado desde una plantilla, también editable antes de correr).
 """
 
 import json
+import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QProcess
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QTextEdit,
-    QPushButton, QLabel, QDialogButtonBox, QMessageBox, QGroupBox
+    QPushButton, QLabel, QDialogButtonBox, QMessageBox, QGroupBox,
+    QTabWidget, QWidget
 )
 from PyQt6.QtGui import QFont
 
@@ -31,12 +38,91 @@ from file_ops import GitVersioning
 
 
 # ======================================================================
+# Definición de los 3 agentes: comando por defecto, prompt, requisitos
+# ======================================================================
+
+CODEX_PROMPT_TEMPLATE = """Estás parado en un repositorio git, en la rama '{target_branch}'.
+
+La rama '{source_branch}' tiene commits automáticos generados por una herramienta \
+de descargas de archivos. Esos commits muchas veces son ruidosos: agregan y \
+eliminan (o modifican) el mismo archivo varias veces seguidas, dejando un \
+historial con clutter innecesario.
+
+Tu tarea:
+1. Analizá el historial y los diffs de '{source_branch}' desde el punto en el \
+que diverge de '{target_branch}' (podés usar `git log`, `git diff` y \
+`git merge-base` para ubicarlo).
+2. Agrupá los cambios de forma LÓGICA (por archivo o por tema), IGNORANDO idas \
+y vueltas intermedias: si un archivo se agregó y después se modificó o se \
+borró varias veces antes de asentarse, no hace falta un commit por cada paso \
+intermedio — solo el resultado final tiene que quedar reflejado.
+3. Creá commits prolijos en la rama '{target_branch}' con mensajes \
+DESCRIPTIVOS: una primera línea corta en modo imperativo como resumen, y un \
+cuerpo debajo explicando qué cambió y por qué, cuando sea relevante.
+4. NO repitas el mismo mensaje de commit para cambios distintos.
+5. Al terminar, la rama '{target_branch}' tiene que estar actualizada y con el \
+working tree limpio.
+
+No toques la rama '{source_branch}' — dejala tal cual, es el registro crudo de \
+descargas. No modifiques código más allá de lo que ya está en los commits que \
+estás reorganizando (tu trabajo es de historial/commits, no de reescribir \
+funcionalidad)."""
+
+COPILOT_PROMPT_TEMPLATE = """Estás en un repositorio git, en la rama '{target_branch}'.
+
+Tu tarea es EXCLUSIVAMENTE de documentación. Podés LEER todo el código fuente \
+para entender qué hace el proyecto, pero SOLO podés crear o modificar archivos \
+de documentación: README.md, AGENTS.md, CHANGELOG.md, archivos .txt, y \
+archivos .md dentro de carpetas de documentación. NO modifiques ningún archivo \
+de código fuente (.py, .js, .ts, .jsx, .tsx, .cs, .java, etc) bajo ninguna \
+circunstancia — ese trabajo lo hacen otros agentes.
+
+Revisá el estado actual del proyecto y actualizá la documentación para que sea \
+precisa y esté al día con el código real: agregá lo que falte, corregí lo que \
+esté desactualizado o sea incorrecto, y dejá los cambios commiteados en \
+'{target_branch}' con un mensaje descriptivo."""
+
+
+AGENT_DEFS = {
+    "codex": {
+        "label": "🧹 Codex — Limpieza de commits",
+        "short_label": "Codex",
+        "description": "Analiza la rama cruda y reescribe el historial en la rama limpia con commits prolijos y descriptivos.",
+        "default_command": 'codex exec --sandbox workspace-write "{prompt}"',
+        "needs_task": False,
+        "needs_source_branch": True,
+        "prompt_template": CODEX_PROMPT_TEMPLATE,
+        "check_binary": "codex",
+        "install_hint": "npm install -g @openai/codex   y luego  codex login",
+    },
+    "copilot": {
+        "label": "📝 Copilot — Documentación",
+        "short_label": "Copilot",
+        "description": "Lee el código para entender el proyecto, pero solo crea o modifica documentación (README, AGENTS.md, .txt, etc).",
+        "default_command": 'copilot -p "{prompt}" --allow-all --no-ask-user',
+        "needs_task": False,
+        "needs_source_branch": False,
+        "prompt_template": COPILOT_PROMPT_TEMPLATE,
+        "check_binary": "copilot",
+        "install_hint": "requiere GitHub Copilot CLI (docs.github.com/copilot) y un plan de Copilot activo",
+    },
+}
+
+AGENT_ORDER = ["codex", "copilot"]
+
+# Comandos por defecto de versiones anteriores que ya no aplican (se
+# migran solos al default actual si el usuario nunca los tocó a mano).
+LEGACY_DEFAULT_COMMANDS = {}
+
+
+# ======================================================================
 # Configuración persistente por carpeta
 # ======================================================================
 
-class CodexConfigStore:
-    """Guarda, por carpeta, la rama cruda/limpia configurada y el
-    comando de Codex a usar. Clave = ruta absoluta de la carpeta."""
+class AgentConfigStore:
+    """Guarda, por carpeta, las ramas cruda/limpia y el comando (y
+    última tarea, para Gemini) de cada uno de los 3 agentes.
+    Clave = ruta absoluta de la carpeta."""
 
     def __init__(self):
         self.base_dir = Path.home() / ".ia_browser"
@@ -58,72 +144,103 @@ class CodexConfigStore:
         with open(self.config_file, "w") as f:
             json.dump(self.data, f, indent=2)
 
-    def get(self, folder: str) -> dict:
-        return self.data.get(str(folder), {
+    def _default_entry(self) -> dict:
+        return {
             "source_branch": "master",
             "target_branch": "main",
-            "codex_command": 'codex exec --sandbox workspace-write "{prompt}"',
-        })
+            "agents": {
+                aid: {"command": defn["default_command"], "last_task": ""}
+                for aid, defn in AGENT_DEFS.items()
+            },
+        }
 
-    def set(self, folder: str, **kwargs):
+    def _migrate(self, entry: dict) -> dict:
+        """Compatibilidad con la config vieja (un solo 'codex_command')
+        y asegura que estén los 3 agentes aunque se hayan agregado
+        después de que el usuario ya tuviera config guardada. También
+        migra comandos por defecto viejos conocidos (ej: el --yolo de
+        gemini) al default actual, siempre que el usuario no lo haya
+        editado a mano a otra cosa."""
+        if "agents" not in entry:
+            legacy_cmd = entry.pop("codex_command", None)
+            entry["agents"] = {
+                aid: {"command": defn["default_command"], "last_task": ""}
+                for aid, defn in AGENT_DEFS.items()
+            }
+            if legacy_cmd:
+                entry["agents"]["codex"]["command"] = legacy_cmd
+        else:
+            for aid, defn in AGENT_DEFS.items():
+                entry["agents"].setdefault(aid, {"command": defn["default_command"], "last_task": ""})
+
+        for aid, defn in AGENT_DEFS.items():
+            current = entry["agents"][aid].get("command", "")
+            if current in LEGACY_DEFAULT_COMMANDS.get(aid, []):
+                entry["agents"][aid]["command"] = defn["default_command"]
+
+        return entry
+
+    def get(self, folder: str) -> dict:
+        entry = self.data.get(str(folder))
+        if entry is None:
+            return self._default_entry()
+        return self._migrate(entry)
+
+    def set_branches(self, folder: str, source_branch: str, target_branch: str):
         entry = self.get(folder)
-        entry.update(kwargs)
+        entry["source_branch"] = source_branch
+        entry["target_branch"] = target_branch
         self.data[str(folder)] = entry
         self.save()
 
-
-DEFAULT_PROMPT_TEMPLATE = """Estás parado en un repositorio git, en la rama '{target_branch}'.
-
-La rama '{source_branch}' tiene commits automáticos generados por una herramienta \
-de descargas de archivos. Esos commits muchas veces son ruidosos: agregan y \
-eliminan (o modifican) el mismo archivo varias veces seguidas, dejando un \
-historial con clutter innecesario.
-
-Tu tarea:
-1. Analizá el historial y los diffs de '{source_branch}' desde el punto en el \
-que diverge de '{target_branch}' (podés usar `git log`, `git diff` y \
-`git merge-base` para ubicarlo).
-2. Agrupá los cambios de forma LÓGICA (por archivo o por tema), IGNORANDO idas \
-y vueltas intermedias: si un archivo se agregó y después se modificó o se \
-borró varias veces antes de asentarse, no hace falta un commit por cada paso \
-intermedio — solo el resultado final tiene que quedar reflejado.
-3. Creá commits prolijos en la rama '{target_branch}' (podés mergear, \
-cherry-pickear o aplicar los cambios directamente, lo que te resulte más \
-prolijo) con mensajes DESCRIPTIVOS: una primera línea corta en modo imperativo \
-como resumen, y un cuerpo debajo explicando qué cambió y por qué, cuando sea \
-relevante.
-4. NO repitas el mismo mensaje de commit para cambios distintos — cada commit \
-tiene que describir específicamente lo que aporta.
-5. Al terminar, la rama '{target_branch}' tiene que estar actualizada y con el \
-working tree limpio (sin cambios pendientes de commitear).
-
-No toques la rama '{source_branch}' — dejala tal cual está, es el registro \
-crudo de descargas."""
+    def set_agent_field(self, folder: str, agent_id: str, **kwargs):
+        entry = self.get(folder)
+        entry["agents"][agent_id].update(kwargs)
+        self.data[str(folder)] = entry
+        self.save()
 
 
 # ======================================================================
 # Diálogo principal
 # ======================================================================
 
-class CodexManagerDialog(QDialog):
-    """Diálogo de gestión: crear repo en GitHub (si falta), configurar
-    ramas cruda/limpia, y disparar Codex CLI para limpiar el historial."""
+class AIAgentsDialog(QDialog):
+    """Diálogo de gestión: conectar repo remoto, configurar ramas
+    cruda/limpia, y disparar cada uno de los 3 agentes (Codex, Copilot,
+    Gemini) por separado sobre la misma carpeta."""
 
     def __init__(self, parent, folder: str):
         super().__init__(parent)
-        self.folder = folder
-        self.config_store = CodexConfigStore()
+        # Normalizamos a separadores nativos del SO (Qt suele devolver
+        # rutas con "/" incluso en Windows; con "\" nativo evitamos
+        # problemas raros al pasarle la carpeta a cmd.exe / QProcess).
+        self.folder = str(Path(folder))
+        self.config_store = AgentConfigStore()
         self.process: QProcess | None = None
+        self.active_agent: str | None = None
+        self.agent_widgets: dict = {}
 
-        self.setWindowTitle(f"Codex Manager — {Path(folder).name}")
+        self.setWindowTitle(f"Agentes IA — {Path(folder).name}")
         self.resize(680, 640)
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"📁 {folder}"))
 
-        self._build_repo_section(layout)
-        self._build_branches_section(layout)
-        self._build_codex_section(layout)
+        self.agents_tabs = QTabWidget()
+
+        config_tab = QWidget()
+        config_layout = QVBoxLayout(config_tab)
+        self._build_repo_section(config_layout)
+        self._build_branches_section(config_layout)
+        config_layout.addStretch()
+        self.agents_tabs.addTab(config_tab, "⚙ Config")
+
+        for agent_id in AGENT_ORDER:
+            tab = QWidget()
+            self._build_agent_tab(tab, agent_id)
+            self.agents_tabs.addTab(tab, AGENT_DEFS[agent_id]["short_label"])
+        layout.addWidget(self.agents_tabs, 1)
+
         self._build_log_section(layout)
 
         close_btn = QPushButton("Cerrar")
@@ -132,7 +249,7 @@ class CodexManagerDialog(QDialog):
 
         self._refresh_repo_status()
 
-    # ---------- Sección: estado del repo / GitHub ----------
+    # ---------- Sección: estado del repo / remoto ----------
 
     def _build_repo_section(self, layout):
         box = QGroupBox("Repositorio")
@@ -246,10 +363,10 @@ class CodexManagerDialog(QDialog):
         form.addRow("Rama cruda:", self.source_branch_edit)
 
         self.target_branch_edit = QLineEdit(cfg["target_branch"])
-        self.target_branch_edit.setPlaceholderText("Rama limpia (destino de los commits de Codex)")
+        self.target_branch_edit.setPlaceholderText("Rama limpia (donde trabajan los 3 agentes)")
         form.addRow("Rama limpia (destino):", self.target_branch_edit)
 
-        save_branches_btn = QPushButton("Guardar ramas")
+        save_branches_btn = QPushButton("Guardar ramas y regenerar prompts")
         save_branches_btn.clicked.connect(self._save_branches)
         form.addRow("", save_branches_btn)
 
@@ -258,57 +375,86 @@ class CodexManagerDialog(QDialog):
     def _save_branches(self):
         source = self.source_branch_edit.text().strip() or "master"
         target = self.target_branch_edit.text().strip() or "main"
-        self.config_store.set(self.folder, source_branch=source, target_branch=target)
-        self._append_log("ℹ Ramas guardadas")
+        self.config_store.set_branches(self.folder, source, target)
+        for agent_id in AGENT_ORDER:
+            self._regenerate_prompt(agent_id)
+        self._append_log("ℹ Ramas guardadas y prompts regenerados")
 
-    # ---------- Sección: Codex ----------
+    # ---------- Sección: un agente ----------
 
-    def _build_codex_section(self, layout):
-        box = QGroupBox("Codex")
-        box_layout = QVBoxLayout(box)
+    def _build_agent_tab(self, tab: QWidget, agent_id: str):
+        defn = AGENT_DEFS[agent_id]
+        tab_layout = QVBoxLayout(tab)
 
-        codex_available = shutil.which("codex") is not None
-        if not codex_available:
-            warn = QLabel(
-                "⚠ No se encontró el comando 'codex' en el PATH. Instalalo con "
-                "'npm install -g @openai/codex' y autenticate con 'codex login' "
-                "antes de usar esta sección."
-            )
+        desc = QLabel(defn["description"])
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: gray; font-size: 11px;")
+        tab_layout.addWidget(desc)
+
+        if shutil.which(defn["check_binary"]) is None:
+            warn = QLabel(f"⚠ No se encontró '{defn['check_binary']}' en el PATH. Instalación: {defn['install_hint']}")
             warn.setWordWrap(True)
             warn.setStyleSheet("color: #b45309;")
-            box_layout.addWidget(warn)
+            tab_layout.addWidget(warn)
+
+        cfg = self.config_store.get(self.folder)
+        agent_cfg = cfg["agents"][agent_id]
 
         form = QFormLayout()
-        cfg = self.config_store.get(self.folder)
-        self.command_edit = QLineEdit(cfg["codex_command"])
-        form.addRow("Comando:", self.command_edit)
-        box_layout.addLayout(form)
+        command_edit = QLineEdit(agent_cfg.get("command", defn["default_command"]))
+        form.addRow("Comando:", command_edit)
+        tab_layout.addLayout(form)
 
-        box_layout.addWidget(QLabel("Instrucciones para Codex (se puede editar antes de correr):"))
-        self.prompt_edit = QTextEdit()
-        self.prompt_edit.setPlainText(self._default_prompt())
-        self.prompt_edit.setMinimumHeight(140)
-        box_layout.addWidget(self.prompt_edit)
+        task_edit = None
+        if defn["needs_task"]:
+            tab_layout.addWidget(QLabel("Descripción de la tarea a implementar:"))
+            task_edit = QTextEdit()
+            task_edit.setPlainText(agent_cfg.get("last_task", ""))
+            task_edit.setPlaceholderText("Ej: Agregar un botón para exportar la lista a CSV...")
+            task_edit.setMinimumHeight(60)
+            tab_layout.addWidget(task_edit)
+
+        tab_layout.addWidget(QLabel("Prompt final (editable antes de correr):"))
+        prompt_edit = QTextEdit()
+        prompt_edit.setMinimumHeight(120)
+        tab_layout.addWidget(prompt_edit, 1)
 
         btn_row = QHBoxLayout()
-        self.run_btn = QPushButton("▶ Ejecutar Codex ahora")
-        self.run_btn.clicked.connect(self._run_codex)
-        self.stop_btn = QPushButton("⏹ Detener")
-        self.stop_btn.clicked.connect(self._stop_codex)
-        self.stop_btn.setEnabled(False)
-        btn_row.addWidget(self.run_btn)
-        btn_row.addWidget(self.stop_btn)
-        box_layout.addLayout(btn_row)
+        regen_btn = QPushButton("🔄 Regenerar desde plantilla")
+        run_btn = QPushButton(f"▶ Ejecutar {defn['short_label']}")
+        stop_btn = QPushButton("⏹ Detener")
+        stop_btn.setEnabled(False)
+        btn_row.addWidget(regen_btn)
+        btn_row.addWidget(run_btn)
+        btn_row.addWidget(stop_btn)
+        tab_layout.addLayout(btn_row)
 
-        layout.addWidget(box)
+        self.agent_widgets[agent_id] = {
+            "command_edit": command_edit, "task_edit": task_edit, "prompt_edit": prompt_edit,
+            "run_btn": run_btn, "stop_btn": stop_btn,
+        }
 
-    def _default_prompt(self) -> str:
+        regen_btn.clicked.connect(lambda: self._regenerate_prompt(agent_id))
+        run_btn.clicked.connect(lambda: self._run_agent(agent_id))
+        stop_btn.clicked.connect(self._stop_current_agent)
+
+        self._regenerate_prompt(agent_id)
+
+    def _regenerate_prompt(self, agent_id: str):
+        defn = AGENT_DEFS[agent_id]
         cfg = self.config_store.get(self.folder)
-        return DEFAULT_PROMPT_TEMPLATE.format(
-            source_branch=cfg["source_branch"], target_branch=cfg["target_branch"]
-        )
+        widgets = self.agent_widgets[agent_id]
 
-    # ---------- Sección: log de ejecución ----------
+        if defn["needs_task"]:
+            task = widgets["task_edit"].toPlainText().strip() or "(completá la descripción de la tarea arriba)"
+            prompt = defn["prompt_template"].format(target_branch=cfg["target_branch"], task=task)
+        else:
+            prompt = defn["prompt_template"].format(
+                source_branch=cfg["source_branch"], target_branch=cfg["target_branch"]
+            )
+        widgets["prompt_edit"].setPlainText(prompt)
+
+    # ---------- Sección: log de ejecución (compartido entre agentes) ----------
 
     def _build_log_section(self, layout):
         layout.addWidget(QLabel("Salida:"))
@@ -318,17 +464,50 @@ class CodexManagerDialog(QDialog):
         self.log_view.setMinimumHeight(140)
         layout.addWidget(self.log_view)
 
+        stdin_row = QHBoxLayout()
+        self.stdin_edit = QLineEdit()
+        self.stdin_edit.setPlaceholderText(
+            "Si el agente te pregunta algo, respondé acá y Enter (deshabilitado si no hay nada corriendo)"
+        )
+        self.stdin_edit.setEnabled(False)
+        self.stdin_edit.returnPressed.connect(self._send_to_process)
+        self.send_stdin_btn = QPushButton("Enviar")
+        self.send_stdin_btn.setEnabled(False)
+        self.send_stdin_btn.clicked.connect(self._send_to_process)
+        stdin_row.addWidget(self.stdin_edit)
+        stdin_row.addWidget(self.send_stdin_btn)
+        layout.addLayout(stdin_row)
+
     def _append_log(self, text: str):
         self.log_view.append(text)
 
-    # ---------- Ejecutar Codex ----------
+    def _send_to_process(self):
+        if not self.process or self.process.state() == QProcess.ProcessState.NotRunning:
+            return
+        text = self.stdin_edit.text()
+        if not text:
+            return
+        self.process.write((text + "\n").encode("utf-8"))
+        self._append_log(f"> {text}")
+        self.stdin_edit.clear()
 
-    def _run_codex(self):
-        if shutil.which("codex") is None:
+    # ---------- Ejecutar un agente ----------
+
+    def _run_agent(self, agent_id: str):
+        defn = AGENT_DEFS[agent_id]
+
+        if shutil.which(defn["check_binary"]) is None:
             QMessageBox.warning(
-                self, "Codex no encontrado",
-                "No se encontró el comando 'codex' en el PATH. Instalalo con "
-                "'npm install -g @openai/codex' y autenticate con 'codex login'.",
+                self, f"{defn['check_binary']} no encontrado",
+                f"No se encontró '{defn['check_binary']}' en el PATH.\n\nInstalación: {defn['install_hint']}",
+            )
+            return
+
+        if self.process is not None:
+            QMessageBox.information(
+                self, "Aviso",
+                f"Ya hay un agente corriendo ({AGENT_DEFS[self.active_agent]['short_label']}). "
+                "Esperá a que termine o detenelo antes de lanzar otro.",
             )
             return
 
@@ -336,22 +515,30 @@ class CodexManagerDialog(QDialog):
             QMessageBox.warning(self, "Aviso", "Esta carpeta todavía no es un repositorio git.")
             return
 
+        cfg = self.config_store.get(self.folder)
         source = self.source_branch_edit.text().strip() or "master"
         target = self.target_branch_edit.text().strip() or "main"
-        self.config_store.set(self.folder, source_branch=source, target_branch=target,
-                               codex_command=self.command_edit.text().strip())
+        self.config_store.set_branches(self.folder, source, target)
 
-        if not GitVersioning.branch_exists(self.folder, source):
+        widgets = self.agent_widgets[agent_id]
+        extra = {"command": widgets["command_edit"].text().strip() or defn["default_command"]}
+        if defn["needs_task"]:
+            extra["last_task"] = widgets["task_edit"].toPlainText().strip()
+        self.config_store.set_agent_field(self.folder, agent_id, **extra)
+
+        if defn["needs_source_branch"] and not GitVersioning.branch_exists(self.folder, source):
             QMessageBox.warning(self, "Aviso", f"La rama cruda '{source}' no existe en este repo.")
             return
+
         if not GitVersioning.branch_exists(self.folder, target):
             resp = QMessageBox.question(
                 self, "Rama destino inexistente",
-                f"La rama '{target}' todavía no existe. ¿Crearla ahora a partir de '{source}'?",
+                f"La rama '{target}' todavía no existe. ¿Crearla ahora?",
             )
             if resp != QMessageBox.StandardButton.Yes:
                 return
-            if not GitVersioning.create_branch(self.folder, target, source):
+            base = source if GitVersioning.branch_exists(self.folder, source) else "HEAD"
+            if not GitVersioning.create_branch(self.folder, target, base):
                 QMessageBox.warning(self, "Error", f"No se pudo crear la rama '{target}'.")
                 return
 
@@ -359,23 +546,47 @@ class CodexManagerDialog(QDialog):
             QMessageBox.warning(
                 self, "Working tree sucio",
                 "Hay cambios sin commitear en esta carpeta. Commiteá o descartá esos "
-                "cambios antes de correr Codex, para no perder nada.",
+                "cambios antes de correr un agente, para no perder nada.",
             )
             return
 
-        # Nos aseguramos de estar parados en la rama destino antes de correr.
         ok, _, err = GitVersioning.run(self.folder, ["checkout", target])
         if not ok:
             QMessageBox.warning(self, "Error", f"No se pudo cambiar a la rama '{target}':\n{err}")
             return
 
-        prompt = self.prompt_edit.toPlainText().strip()
-        command_template = self.command_edit.text().strip() or 'codex exec --sandbox workspace-write "{prompt}"'
-        full_command = command_template.replace("{prompt}", prompt)
+        prompt = widgets["prompt_edit"].toPlainText().strip()
+        command_template = widgets["command_edit"].text().strip() or defn["default_command"]
 
-        self._append_log(f"$ {full_command}\n(cwd: {self.folder})\n")
-        self.run_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        # Aplanamos el prompt a una sola línea (defensivo: cmd.exe puede
+        # llegar a comportarse raro con saltos de línea embebidos aunque
+        # vayan como un solo argumento) y neutralizamos comillas dobles
+        # internas (podrían chocar con las comillas que use el propio
+        # cmd.exe al reinterpretar la línea). El cuadro de texto de la
+        # UI sigue mostrando el prompt con formato normal.
+        prompt_for_process = " ".join(prompt.split()).replace('"', "'")
+
+        try:
+            argv = self._build_argv(command_template, prompt_for_process)
+        except ValueError as e:
+            QMessageBox.warning(self, "Comando inválido", f"No se pudo interpretar el comando:\n{e}")
+            return
+        if not argv:
+            QMessageBox.warning(self, "Aviso", "El comando está vacío.")
+            return
+
+        try:
+            display_command = subprocess.list2cmdline(argv)
+        except Exception:
+            display_command = " ".join(argv)
+        self._append_log(f"\n=== {defn['label']} ===\n$ {display_command}\n(cwd: {self.folder})\n")
+
+        self.active_agent = agent_id
+        self._set_other_agents_enabled(agent_id, False)
+        widgets["run_btn"].setEnabled(False)
+        widgets["stop_btn"].setEnabled(True)
+        self.stdin_edit.setEnabled(True)
+        self.send_stdin_btn.setEnabled(True)
 
         self.process = QProcess(self)
         self.process.setWorkingDirectory(self.folder)
@@ -383,13 +594,42 @@ class CodexManagerDialog(QDialog):
         self.process.readyReadStandardOutput.connect(self._on_process_output)
         self.process.finished.connect(self._on_process_finished)
 
-        # Usamos una shell para poder pasar el comando tal cual lo
-        # escribió el usuario (con comillas, pipes, etc.) sin tener que
-        # parsear argumentos nosotros mismos.
+        program, args = argv[0], argv[1:]
+
+        # En Windows, los binarios que instala npm (codex/copilot/gemini)
+        # suelen ser shims .cmd/.ps1, que CreateProcess no puede ejecutar
+        # directo — hace falta cmd.exe como intérprete. Le pasamos cada
+        # token COMO ELEMENTO SEPARADO de la lista (nunca como un string
+        # ya armado con comillas), para que Qt aplique su propio
+        # escapado una sola vez por argumento, evitando el anidamiento
+        # de comillas que rompía el prompt antes.
         if shutil.which("cmd.exe"):
-            self.process.start("cmd.exe", ["/c", full_command])
+            self.process.start("cmd.exe", ["/c", program] + args)
         else:
-            self.process.start("/bin/sh", ["-c", full_command])
+            self.process.start(program, args)
+
+    def _build_argv(self, command_template: str, prompt: str) -> list:
+        """Tokeniza el template de comando (ej. 'gemini -p "{prompt}"')
+        y devuelve la lista de argumentos con el prompt insertado como
+        UN SOLO elemento — nunca como texto embebido dentro de otro
+        string — para que no haga falta escapar comillas/saltos de
+        línea manualmente al pasarlo al proceso."""
+        tokens = shlex.split(command_template)
+        argv = []
+        for tok in tokens:
+            if tok == "{prompt}":
+                argv.append(prompt)
+            elif "{prompt}" in tok:
+                argv.append(tok.replace("{prompt}", prompt))
+            else:
+                argv.append(tok)
+        return argv
+
+    def _set_other_agents_enabled(self, running_agent: str, enabled: bool):
+        for aid, widgets in self.agent_widgets.items():
+            if aid == running_agent:
+                continue
+            widgets["run_btn"].setEnabled(enabled)
 
     def _on_process_output(self):
         if not self.process:
@@ -400,13 +640,21 @@ class CodexManagerDialog(QDialog):
             self.log_view.insertPlainText(data)
 
     def _on_process_finished(self, exit_code: int, exit_status):
-        self._append_log(f"\n--- Proceso terminado (código {exit_code}) ---\n")
-        self.run_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        agent_label = AGENT_DEFS[self.active_agent]["short_label"] if self.active_agent else "?"
+        self._append_log(f"\n--- {agent_label} terminó (código {exit_code}) ---\n")
+
+        if self.active_agent and self.active_agent in self.agent_widgets:
+            self.agent_widgets[self.active_agent]["run_btn"].setEnabled(True)
+            self.agent_widgets[self.active_agent]["stop_btn"].setEnabled(False)
+        self._set_other_agents_enabled(self.active_agent or "", True)
+        self.stdin_edit.setEnabled(False)
+        self.send_stdin_btn.setEnabled(False)
+
         self.process = None
+        self.active_agent = None
         self._refresh_repo_status()
 
-    def _stop_codex(self):
+    def _stop_current_agent(self):
         if self.process:
             self.process.kill()
             self._append_log("\n--- Detenido por el usuario ---\n")
@@ -414,8 +662,8 @@ class CodexManagerDialog(QDialog):
     def closeEvent(self, event):
         if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
             confirm = QMessageBox.question(
-                self, "Codex sigue corriendo",
-                "Codex todavía está ejecutándose. ¿Detenerlo y cerrar?",
+                self, "Un agente sigue corriendo",
+                "Todavía hay un agente ejecutándose. ¿Detenerlo y cerrar?",
             )
             if confirm != QMessageBox.StandardButton.Yes:
                 event.ignore()
