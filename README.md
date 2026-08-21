@@ -66,17 +66,27 @@ Todo se guarda en `~/.ia_browser/`:
 - **OAuth**: `CustomWebEnginePage.createWindow()` abre los popups de login
   (ej. "Continuar con Google") en una ventana separada que comparte el
   mismo perfil que la pestaña de origen.
-- **Codex Manager** (menú ⚙ de Perfiles, o click derecho sobre una
-  Colección con carpeta asignada): permite conectar la carpeta a un
-  repositorio de GitHub que el usuario ya creó a mano — solo pegando su
-  URL (HTTPS o SSH), sin manejar tokens (usa la autenticación de git ya
-  configurada en el sistema). También permite configurar una rama
-  "cruda" (donde caen los commits automáticos de las descargas — con
-  clutter de agregar/eliminar el mismo archivo varias veces) y una rama
-  "limpia" de destino, y correr Codex CLI (`codex exec`) para que
-  analice esa rama cruda y genere commits prolijos y con mensajes
-  descriptivos en la rama limpia, sin duplicar mensajes de commit.
-  Requiere tener `codex` instalado y autenticado
-  (`npm install -g @openai/codex` y `codex login`) — el diálogo avisa
-  si no lo encuentra en el PATH.
+- **Agentes IA** (menú ⚙ de Perfiles, o click derecho sobre una
+  Colección con carpeta asignada): diálogo con pestañas — **⚙ Config**
+  (conectar la carpeta a un repositorio de GitHub que el usuario ya
+  creó a mano, solo pegando su URL HTTPS o SSH, sin manejar tokens; y
+  configurar una rama "cruda", donde caen los commits automáticos de
+  las descargas, y una rama "limpia" de destino) y una pestaña por cada
+  agente de CLI:
+  - **🧹 Codex** — analiza la rama cruda y arma commits prolijos y
+    descriptivos, agrupando cambios y evitando clutter de
+    agregar/eliminar el mismo archivo varias veces.
+  - **📝 Copilot** — lee el código para entender el proyecto, pero
+    solo crea o modifica documentación (README.md, AGENTS.md, .txt,
+    etc), nunca código fuente.
+
+  Cada agente tiene su propio comando (editable, con placeholder
+  `{prompt}`) y su propio prompt (generado desde una plantilla,
+  también editable antes de correr), más un campo para responderle
+  por stdin si te pregunta algo mientras corre. Requieren tener las
+  CLIs correspondientes instaladas y autenticadas — el diálogo avisa
+  si no las encuentra en el PATH:
+  - Codex: `npm install -g @openai/codex` y `codex login`
+  - Copilot: GitHub Copilot CLI (requiere plan de Copilot activo)
+  - Gemini: `npm install -g @google/gemini-cli` y login con Google
 
