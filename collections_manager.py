@@ -176,16 +176,36 @@ class NewCollectionDialog(QDialog):
 class SaveToCollectionDialog(QDialog):
     """Dialog para guardar la página actual en una Colección (existente o nuevo)."""
 
-    def __init__(self, parent, collections: list):
+    def __init__(self, parent, collections: list, current_url: str = None, collection_manager=None):
         super().__init__(parent)
         self.setWindowTitle("Guardar en Colección")
+        self.current_url = current_url
+        self.collection_manager = collection_manager
         layout = QVBoxLayout(self)
 
         form = QFormLayout()
         self.combo = QComboBox()
         self.combo.addItem("+ Crear nueva Colección...", None)
+        
+        # Detectar en qué colección está la URL actual
+        current_collection_id = None
+        if current_url and collection_manager:
+            for collection in collections:
+                col_data = collection_manager.get_collection(collection["id"])
+                if col_data and any(item["url"] == current_url for item in col_data.get("items", [])):
+                    current_collection_id = collection["id"]
+                    break
+        
         for t in collections:
             self.combo.addItem(t["name"], t["id"])
+        
+        # Seleccionar colección actual si la URL ya está en una
+        if current_collection_id:
+            for i in range(self.combo.count()):
+                if self.combo.itemData(i) == current_collection_id:
+                    self.combo.setCurrentIndex(i)
+                    break
+        
         form.addRow("Colección:", self.combo)
 
         self.new_name_edit = QLineEdit()
