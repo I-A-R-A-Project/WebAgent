@@ -1,4 +1,4 @@
-﻿"""
+"""
 main.py - IA Browser: ventana principal.
 
 Navegador con pestañas, perfiles aislados (sesión/cookies/cache propios) y
@@ -40,6 +40,7 @@ from iara_common.pdf_tab import PdfTab
 from iara_common.tabs import VIDEO_EXTS, UnifiedWebTab
 from iara_common.video_tab import VideoTab
 from iara_common.web_profiles import build_web_profile
+from codex_manager import CodexManagerDialog
 
 
 class IABrowser(QMainWindow):
@@ -903,6 +904,7 @@ class IABrowser(QMainWindow):
         git_action = menu.addAction(
             "✅ Git: sobrescribir (activado)" if git_on else "☐ Git: sobrescribir (desactivado)"
         )
+        codex_action = menu.addAction("🤖 Codex Manager...")
         delete_action = menu.addAction("Eliminar perfil")
         if data.get("is_default"):
             delete_action.setEnabled(False)
@@ -918,10 +920,17 @@ class IABrowser(QMainWindow):
             self._change_profile_home(profile_id)
         elif action == change_folder_action:
             self._change_profile_folder(profile_id)
+        elif action == codex_action:
+            self._open_codex_manager(data["files_dir"])
         elif action == git_action:
             self._toggle_profile_git(profile_id)
         elif action == delete_action:
             self._delete_profile(profile_id)
+
+    def _open_codex_manager(self, folder: str):
+        Path(folder).mkdir(parents=True, exist_ok=True)
+        dialog = CodexManagerDialog(self, folder)
+        dialog.exec()
 
     def _change_profile_home(self, profile_id: str):
         data = self.profile_manager.get_profile(profile_id)
@@ -1222,6 +1231,10 @@ class IABrowser(QMainWindow):
             git_action = menu.addAction(
                 "✅ Git: sobrescribir (activado)" if git_on else "☐ Git: sobrescribir (desactivado)"
             )
+            codex_action = menu.addAction("🤖 Codex Manager...")
+            if not (collection and collection.get("download_dir")):
+                codex_action.setEnabled(False)
+                codex_action.setToolTip("Asigná primero una carpeta de descarga a esta Colección")
             delete_action = menu.addAction("Eliminar Colección")
 
             action = menu.exec(self.collections_tree.mapToGlobal(pos))
@@ -1229,6 +1242,8 @@ class IABrowser(QMainWindow):
                 self._rename_collection(collection_id)
             elif action == folder_action:
                 self._pick_collection_folder(collection_id)
+            elif action == codex_action:
+                self._open_codex_manager(collection["download_dir"])
             elif action == git_action:
                 self._toggle_collection_git(collection_id)
             elif action == delete_action:

@@ -11,8 +11,9 @@ ia_browser/
 ├── profiles.py             # ProfileManager + NewProfileDialog
 ├── collections_manager.py    # CollectionManager + NewCollectionDialog + SaveToCollectionDialog
 ├── downloads.py                # DownloadDialog (descarga + extracción de comprimidos)
-├── web_engine.py                 # CustomWebEnginePage (maneja popups de OAuth)
-├── file_ops.py                     # GitVersioning + FileOps (papelera, split/join)
+├── codex_manager.py               # Codex Manager: crear repo GitHub + limpiar historial con Codex CLI
+├── web_engine.py                     # CustomWebEnginePage (popups OAuth + vista custom de carpetas)
+├── file_ops.py                         # GitVersioning + FileOps (papelera, split/join, helpers de branch)
 └── requirements.txt
 ```
 
@@ -65,4 +66,17 @@ Todo se guarda en `~/.ia_browser/`:
 - **OAuth**: `CustomWebEnginePage.createWindow()` abre los popups de login
   (ej. "Continuar con Google") en una ventana separada que comparte el
   mismo perfil que la pestaña de origen.
+- **Codex Manager** (menú ⚙ de Perfiles, o click derecho sobre una
+  Colección con carpeta asignada): permite conectar la carpeta a un
+  repositorio de GitHub que el usuario ya creó a mano — solo pegando su
+  URL (HTTPS o SSH), sin manejar tokens (usa la autenticación de git ya
+  configurada en el sistema). También permite configurar una rama
+  "cruda" (donde caen los commits automáticos de las descargas — con
+  clutter de agregar/eliminar el mismo archivo varias veces) y una rama
+  "limpia" de destino, y correr Codex CLI (`codex exec`) para que
+  analice esa rama cruda y genere commits prolijos y con mensajes
+  descriptivos en la rama limpia, sin duplicar mensajes de commit.
+  Requiere tener `codex` instalado y autenticado
+  (`npm install -g @openai/codex` y `codex login`) — el diálogo avisa
+  si no lo encuentra en el PATH.
 

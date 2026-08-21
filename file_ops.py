@@ -120,6 +120,100 @@ class GitVersioning:
         except Exception:
             return []
 
+    @staticmethod
+    def get_current_branch(directory: str) -> str:
+        """Devuelve el nombre de la rama actual, o '' si no se pudo determinar."""
+        if not GitVersioning.is_available() or not GitVersioning.has_repo(directory):
+            return ""
+        try:
+            result = subprocess.run(
+                ["git", "branch", "--show-current"], cwd=directory,
+                capture_output=True, text=True, timeout=5,
+            )
+            return result.stdout.strip()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def branch_exists(directory: str, branch: str) -> bool:
+        if not GitVersioning.is_available() or not GitVersioning.has_repo(directory):
+            return False
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", branch],
+                cwd=directory, capture_output=True, timeout=5,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def create_branch(directory: str, branch: str, from_ref: str = "HEAD") -> bool:
+        """Crea 'branch' a partir de from_ref si todavía no existe."""
+        if GitVersioning.branch_exists(directory, branch):
+            return True
+        try:
+            result = subprocess.run(
+                ["git", "branch", branch, from_ref], cwd=directory,
+                capture_output=True, timeout=10,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def has_remote(directory: str, name: str = "origin") -> bool:
+        if not GitVersioning.is_available() or not GitVersioning.has_repo(directory):
+            return False
+        try:
+            result = subprocess.run(
+                ["git", "remote"], cwd=directory,
+                capture_output=True, text=True, timeout=5,
+            )
+            return name in result.stdout.split()
+        except Exception:
+            return False
+
+    @staticmethod
+    def get_remote_url(directory: str, name: str = "origin") -> str:
+        if not GitVersioning.has_remote(directory, name):
+            return ""
+        try:
+            result = subprocess.run(
+                ["git", "remote", "get-url", name], cwd=directory,
+                capture_output=True, text=True, timeout=5,
+            )
+            return result.stdout.strip()
+        except Exception:
+            return ""
+
+    @staticmethod
+    def is_clean(directory: str) -> bool:
+        """True si no hay cambios sin commitear (working tree limpio)."""
+        if not GitVersioning.is_available() or not GitVersioning.has_repo(directory):
+            return True
+        try:
+            result = subprocess.run(
+                ["git", "status", "--porcelain"], cwd=directory,
+                capture_output=True, text=True, timeout=10,
+            )
+            return result.stdout.strip() == ""
+        except Exception:
+            return True
+
+    @staticmethod
+    def run(directory: str, args: list, timeout: int = 30) -> tuple:
+        """Corre un comando git arbitrario en la carpeta. Devuelve
+        (ok: bool, stdout: str, stderr: str)."""
+        try:
+            result = subprocess.run(
+                ["git"] + args, cwd=directory,
+                capture_output=True, text=True, timeout=timeout,
+            )
+            return result.returncode == 0, result.stdout, result.stderr
+        except Exception as e:
+            return False, "", str(e)
+
 
 class FileOps:
     """Utilidades de archivo para las carpetas de Temas/perfiles:
