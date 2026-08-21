@@ -19,16 +19,17 @@ Cada agente tiene su propio comando (editable) y su propio prompt
 """
 
 import json
+import re
 import shlex
 import shutil
 import subprocess
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QProcess
+from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QTextEdit,
     QPushButton, QLabel, QDialogButtonBox, QMessageBox, QGroupBox,
-    QTabWidget, QWidget
+    QTabWidget, QWidget, QComboBox
 )
 from PyQt6.QtGui import QFont
 
@@ -97,7 +98,7 @@ AGENT_DEFS = {
         "label": "📝 Copilot — Documentación",
         "short_label": "Copilot",
         "description": "Lee el código para entender el proyecto, pero solo crea o modifica documentación (README, AGENTS.md, .txt, etc).",
-        "default_command": 'copilot -p "{prompt}" --allow-all --no-ask-user',
+        "default_command": 'copilot -i "{prompt}" --allow-all',
         "needs_task": False,
         "needs_source_branch": False,
         "prompt_template": COPILOT_PROMPT_TEMPLATE,
@@ -110,7 +111,9 @@ AGENT_ORDER = ["codex", "copilot"]
 
 # Comandos por defecto de versiones anteriores que ya no aplican (se
 # migran solos al default actual si el usuario nunca los tocó a mano).
-LEGACY_DEFAULT_COMMANDS = {}
+LEGACY_DEFAULT_COMMANDS = {
+    "copilot": ['copilot -p "{prompt}" --allow-all --no-ask-user'],
+}
 
 
 # ======================================================================
@@ -207,22 +210,54 @@ class AIAgentsDialog(QDialog):
     cruda/limpia, y disparar cada uno de los 3 agentes (Codex, Copilot,
     Gemini) por separado sobre la misma carpeta."""
 
-    def __init__(self, parent, folder: str):
+    def __init__(self, parent, folder: str, profile_id: str | None = None,
+                 profile_ids: list[str] | None = None, profile_names: dict[str, str] | None = None,
+                 auth_url_handler=None, auth_success_handler=None):
         super().__init__(parent)
         # Normalizamos a separadores nativos del SO (Qt suele devolver
         # rutas con "/" incluso en Windows; con "\" nativo evitamos
         # problemas raros al pasarle la carpeta a cmd.exe / QProcess).
         self.folder = str(Path(folder))
+        self.profile_id = profile_id or "default"
+        self.profile_ids = profile_ids or [self.profile_id]
+        self.profile_names = profile_names or {}
+        self.auth_url_handler = auth_url_handler
+        self.auth_success_handler = auth_success_handler
+        self.copilot_home = Path.home() / ".ia_browser" / "copilot_profiles" / self.profile_id
         self.config_store = AgentConfigStore()
+        config = self.config_store.get(self.folder)
+        if config["source_branch"] == "master" and config["target_branch"] == "main":
+            self.config_store.set_branches(
+                self.folder, self.raw_branch, self.profile_branch
+            )
         self.process: QProcess | None = None
         self.active_agent: str | None = None
         self.agent_widgets: dict = {}
+        self.copilot_rotation_in_progress = False
+        self.pending_copilot_retry = False
+        self.pending_copilot_login = False
+        self.last_copilot_prompt = ""
+        self.auth_urls_seen = set()
+        self.copilot_output_buffer = ""
+        self.copilot_auth_code = ""
+        self.raw_branch, self.profile_branch = GitVersioning.profile_branch_names(self.profile_id)
 
         self.setWindowTitle(f"Agentes IA — {Path(folder).name}")
         self.resize(680, 640)
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"📁 {folder}"))
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("Cuenta Copilot / perfil:"))
+        self.copilot_profile_combo = QComboBox()
+        for item in self.profile_ids:
+            self.copilot_profile_combo.addItem(self.profile_names.get(item, item), item)
+        current_index = self.copilot_profile_combo.findData(self.profile_id)
+        if current_index >= 0:
+            self.copilot_profile_combo.setCurrentIndex(current_index)
+        self.copilot_profile_combo.currentIndexChanged.connect(self._select_copilot_profile)
+        profile_row.addWidget(self.copilot_profile_combo, 1)
+        layout.addLayout(profile_row)
 
         self.agents_tabs = QTabWidget()
 
@@ -246,6 +281,48 @@ class AIAgentsDialog(QDialog):
         layout.addWidget(close_btn)
 
         self._refresh_repo_status()
+
+    def _copilot_environment(self):
+        self.copilot_home.mkdir(parents=True, exist_ok=True)
+        environment = QProcessEnvironment.systemEnvironment()
+        for name in ("COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+            environment.remove(name)
+        environment.insert("COPILOT_HOME", str(self.copilot_home))
+        # Device flow link is opened by IA Browser, never by system browser.
+        environment.insert("BROWSER", "cmd.exe /c exit 0")
+        return environment
+
+    def _open_copilot_auth_url(self, text):
+        matches = re.findall(
+            r"https?://(?:github\.com|github\.[^/\s]+)/(?:login/device|login/oauth/authorize)[^\s<>()\"]*",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if matches and self.auth_url_handler:
+            url = matches[-1].rstrip(".,);")
+            if url not in self.auth_urls_seen:
+                self.auth_urls_seen.add(url)
+                code_match = re.search(r"\b([A-Z0-9]{4,5}-[A-Z0-9]{4,5})\b", text)
+                self.auth_url_handler(
+                    url, self.profile_id,
+                    code_match.group(1) if code_match else self.copilot_auth_code,
+                )
+                self.copilot_auth_code = ""
+
+    def _select_copilot_profile(self, index):
+        selected = self.copilot_profile_combo.itemData(index)
+        if not selected or selected == self.profile_id:
+            return
+        if self.process is not None:
+            self.copilot_profile_combo.blockSignals(True)
+            self.copilot_profile_combo.setCurrentIndex(
+                self.copilot_profile_combo.findData(self.profile_id)
+            )
+            self.copilot_profile_combo.blockSignals(False)
+            QMessageBox.information(self, "Copilot", "Detené el proceso antes de cambiar de perfil.")
+            return
+        self.profile_id = selected
+        self.copilot_home = Path.home() / ".ia_browser" / "copilot_profiles" / selected
 
     # ---------- Sección: estado del repo / remoto ----------
 
@@ -371,8 +448,8 @@ class AIAgentsDialog(QDialog):
         layout.addWidget(box)
 
     def _save_branches(self):
-        source = self.source_branch_edit.text().strip() or "master"
-        target = self.target_branch_edit.text().strip() or "main"
+        source = self.source_branch_edit.text().strip() or self.raw_branch
+        target = self.target_branch_edit.text().strip() or self.profile_branch
         self.config_store.set_branches(self.folder, source, target)
         for agent_id in AGENT_ORDER:
             self._regenerate_prompt(agent_id)
@@ -425,6 +502,10 @@ class AIAgentsDialog(QDialog):
         btn_row.addWidget(regen_btn)
         btn_row.addWidget(run_btn)
         btn_row.addWidget(stop_btn)
+        if agent_id == "copilot":
+            login_btn = QPushButton("🔐 Iniciar sesión en este perfil")
+            login_btn.clicked.connect(self._start_copilot_login)
+            btn_row.addWidget(login_btn)
         tab_layout.addLayout(btn_row)
 
         self.agent_widgets[agent_id] = {
@@ -514,8 +595,8 @@ class AIAgentsDialog(QDialog):
             return
 
         cfg = self.config_store.get(self.folder)
-        source = self.source_branch_edit.text().strip() or "master"
-        target = self.target_branch_edit.text().strip() or "main"
+        source = self.source_branch_edit.text().strip() or self.raw_branch
+        target = self.target_branch_edit.text().strip() or self.profile_branch
         self.config_store.set_branches(self.folder, source, target)
 
         widgets = self.agent_widgets[agent_id]
@@ -563,6 +644,8 @@ class AIAgentsDialog(QDialog):
         # cmd.exe al reinterpretar la línea). El cuadro de texto de la
         # UI sigue mostrando el prompt con formato normal.
         prompt_for_process = " ".join(prompt.split()).replace('"', "'")
+        if agent_id == "copilot":
+            prompt_for_process += self._git_context_for_prompt()
 
         try:
             argv = self._build_argv(command_template, prompt_for_process)
@@ -601,10 +684,50 @@ class AIAgentsDialog(QDialog):
         # ya armado con comillas), para que Qt aplique su propio
         # escapado una sola vez por argumento, evitando el anidamiento
         # de comillas que rompía el prompt antes.
+        if agent_id == "copilot":
+            self.process.setProcessEnvironment(self._copilot_environment())
         if shutil.which("cmd.exe"):
             self.process.start("cmd.exe", ["/c", program] + args)
         else:
             self.process.start(program, args)
+
+    def _git_context_for_prompt(self):
+            status = GitVersioning.run(self.folder, ["status", "--short"], timeout=10)
+            diff = GitVersioning.run(self.folder, ["diff", "--", "."], timeout=10)
+            recent = GitVersioning.run(self.folder, ["diff", "HEAD~1", "HEAD"], timeout=10)
+            branch = GitVersioning.get_current_branch(self.folder)
+            return (
+                f"\n\nCurrent git context: branch={branch or '(detached)'}\n"
+                f"Working tree:\n{status[1][:4000]}\n"
+                f"Uncommitted diff:\n{diff[1][:12000]}\n"
+                f"Most recent commit diff:\n{recent[1][:12000]}\n"
+                "Inspect git diff before changing files so you preserve work from other agents."
+            )
+
+    def _start_copilot_login(self):
+        if self.process is not None:
+            QMessageBox.information(self, "Copilot", "Ya hay un proceso ejecutándose.")
+            return
+        if shutil.which("copilot") is None:
+            QMessageBox.warning(self, "Copilot no encontrado", AGENT_DEFS["copilot"]["install_hint"])
+            return
+        self.active_agent = "copilot"
+        self._set_other_agents_enabled("copilot", False)
+        self.agent_widgets["copilot"]["run_btn"].setEnabled(False)
+        self.agent_widgets["copilot"]["stop_btn"].setEnabled(True)
+        self.stdin_edit.setEnabled(True)
+        self.send_stdin_btn.setEnabled(True)
+        self._append_log(f"\n=== Autenticando Copilot ({self.profile_id}) ===\n")
+        self.process = QProcess(self)
+        self.process.setWorkingDirectory(self.folder)
+        self.process.setProcessEnvironment(self._copilot_environment())
+        self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self.process.readyReadStandardOutput.connect(self._on_process_output)
+        self.process.finished.connect(self._on_process_finished)
+        if shutil.which("cmd.exe"):
+            self.process.start("cmd.exe", ["/c", "copilot", "login", "--device-code"])
+        else:
+            self.process.start("copilot", ["login", "--device-code"])
 
     def _build_argv(self, command_template: str, prompt: str) -> list:
         """Tokeniza el template de comando (ej. 'gemini -p "{prompt}"')
@@ -634,10 +757,31 @@ class AIAgentsDialog(QDialog):
             return
         data = bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")
         if data:
+            if self.active_agent == "copilot":
+                self.copilot_output_buffer += data
+                code_match = re.search(r"\b([A-Z0-9]{4,5}-[A-Z0-9]{4,5})\b", self.copilot_output_buffer)
+                if code_match:
+                    self.copilot_auth_code = code_match.group(1)
+                if "Error: No authentication information found." in self.copilot_output_buffer:
+                    self.copilot_output_buffer = ""
+                    self.pending_copilot_login = True
+                    self.pending_copilot_retry = True
+                    self._append_log("\n--- Autenticación requerida; iniciando login ---\n")
+                    self.process.kill()
+                if "Signed in successfully" in self.copilot_output_buffer:
+                    self.copilot_output_buffer = ""
+                    self.pending_copilot_retry = True
+                    if self.auth_success_handler:
+                        self.auth_success_handler(self.profile_id)
+                self._open_copilot_auth_url(data)
+                if self._looks_like_copilot_limit(data):
+                    self._rotate_copilot_profile()
             self.log_view.moveCursor(self.log_view.textCursor().MoveOperation.End)
             self.log_view.insertPlainText(data)
 
     def _on_process_finished(self, exit_code: int, exit_status):
+        retry_copilot = self.pending_copilot_retry
+        start_login = self.pending_copilot_login
         agent_label = AGENT_DEFS[self.active_agent]["short_label"] if self.active_agent else "?"
         self._append_log(f"\n--- {agent_label} terminó (código {exit_code}) ---\n")
 
@@ -650,7 +794,47 @@ class AIAgentsDialog(QDialog):
 
         self.process = None
         self.active_agent = None
+        self.copilot_rotation_in_progress = False
+        self.pending_copilot_retry = False
+        self.pending_copilot_login = False
         self._refresh_repo_status()
+        if start_login:
+            QTimer.singleShot(250, self._start_copilot_login)
+        elif retry_copilot:
+            QTimer.singleShot(250, lambda: self._run_agent("copilot"))
+
+    def _looks_like_copilot_limit(self, text):
+        lowered = text.lower()
+        return any(pattern in lowered for pattern in (
+            "rate limit", "limit reached", "usage limit", "quota exhausted",
+            "exhausted", "too many requests", "no premium requests",
+            "maximum number of requests",
+        ))
+
+    def _rotate_copilot_profile(self):
+        if self.copilot_rotation_in_progress or len(self.profile_ids) < 2:
+            return
+        current_index = self.profile_ids.index(self.profile_id)
+        next_profile = next(
+            (self.profile_ids[(current_index + offset) % len(self.profile_ids)]
+             for offset in range(1, len(self.profile_ids) + 1)
+             if self.profile_ids[(current_index + offset) % len(self.profile_ids)] != self.profile_id),
+            None,
+        )
+        if not next_profile:
+            return
+        self.copilot_rotation_in_progress = True
+        self.pending_copilot_retry = True
+        self.profile_id = next_profile
+        self.copilot_home = Path.home() / ".ia_browser" / "copilot_profiles" / next_profile
+        self.copilot_profile_combo.blockSignals(True)
+        self.copilot_profile_combo.setCurrentIndex(
+            self.copilot_profile_combo.findData(next_profile)
+        )
+        self.copilot_profile_combo.blockSignals(False)
+        self._append_log(f"\n--- Cuota agotada; rotando a perfil {next_profile} ---\n")
+        if self.process:
+            self.process.kill()
 
     def _stop_current_agent(self):
         if self.process:

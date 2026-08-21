@@ -12,6 +12,7 @@ import json
 import shutil
 import subprocess
 import hashlib
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -160,6 +161,34 @@ class GitVersioning:
             return result.returncode == 0
         except Exception:
             return False
+
+    @staticmethod
+    def profile_branch_names(profile_id: str) -> tuple[str, str]:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", str(profile_id)).strip("-") or "default"
+        return f"profile/{safe}-raw", f"profile/{safe}"
+
+    @staticmethod
+    def ensure_profile_branch(directory: str, profile_id: str, raw: bool = True) -> tuple[bool, str]:
+        """Switch clean repository to profile-specific raw or clean branch."""
+        if not GitVersioning.has_repo(directory):
+            GitVersioning.ensure_repo(directory)
+        if not GitVersioning.has_repo(directory):
+            return False, ""
+        if not GitVersioning.is_clean(directory):
+            return False, GitVersioning.get_current_branch(directory)
+        raw_branch, clean_branch = GitVersioning.profile_branch_names(profile_id)
+        branch = raw_branch if raw else clean_branch
+        if not GitVersioning.branch_exists(directory, branch):
+            current = GitVersioning.get_current_branch(directory)
+            has_commit, _, _ = GitVersioning.run(directory, ["rev-parse", "--verify", "HEAD"])
+            if current and has_commit:
+                if not GitVersioning.create_branch(directory, branch, current):
+                    return False, current
+            else:
+                ok, _, _ = GitVersioning.run(directory, ["checkout", "-b", branch])
+                return (ok, branch if ok else current)
+        ok, _, _ = GitVersioning.run(directory, ["checkout", branch])
+        return ok, branch if ok else GitVersioning.get_current_branch(directory)
 
     @staticmethod
     def has_remote(directory: str, name: str = "origin") -> bool:

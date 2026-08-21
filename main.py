@@ -71,6 +71,7 @@ class IABrowser(QMainWindow):
         # Mantiene vivos los diálogos de descarga en curso (no modales)
         # para que no se destruyan mientras la descarga sigue en background.
         self._download_dialogs = []
+        self._agent_dialogs = []
 
         self._setup_ui()
         self._setup_status_bar()
@@ -180,10 +181,26 @@ class IABrowser(QMainWindow):
 
         filename = Path(download.downloadFileName()).name
 
+        if git_versioning and GitVersioning.is_available():
+            switched, branch = GitVersioning.ensure_profile_branch(target_dir, profile_id, raw=True)
+            if not switched:
+                QMessageBox.warning(
+                    self,
+                    "Carpeta ocupada",
+                    "No se puede cambiar a la rama segura del perfil porque hay "
+                    "cambios sin commitear. Commiteá o descartá esos cambios antes "
+                    "de iniciar otra descarga.",
+                )
+                return
+            self.statusBar().showMessage(f"Descarga aislada en rama {branch}", 5000)
+
         dialog = DownloadDialog(
             self, download, target_dir, filename,
             git_versioning=git_versioning and GitVersioning.is_available(),
-            on_finished_callback=self._handle_download_finished,
+            on_finished_callback=lambda directory, name, was_extracted, uses_git,
+                pid=profile_id: self._handle_download_finished(
+                    directory, name, was_extracted, uses_git, pid
+                ),
         )
         self._download_dialogs.append(dialog)
         dialog.finished.connect(lambda _r=None, d=dialog: self._forget_download_dialog(d))
@@ -195,7 +212,10 @@ class IABrowser(QMainWindow):
         if dialog in self._download_dialogs:
             self._download_dialogs.remove(dialog)
 
-    def _handle_download_finished(self, target_dir: str, filename: str, extracted: bool, git_versioning: bool):
+    def _handle_download_finished(
+        self, target_dir: str, filename: str, extracted: bool,
+        git_versioning: bool, profile_id: str | None = None,
+    ):
         """Callback del DownloadDialog al terminar: se encarga del commit
         con git si corresponde (un commit por archivo, o 'add -A' si se
         extrajo un comprimido y aparecieron varios archivos nuevos)."""
@@ -204,6 +224,16 @@ class IABrowser(QMainWindow):
             return
 
         GitVersioning.ensure_repo(target_dir)
+        if profile_id:
+            switched, branch = GitVersioning.ensure_profile_branch(
+                target_dir, profile_id, raw=True
+            )
+            if not switched:
+                self._set_git_warning(
+                    "⚠ No se pudo volver a la rama segura del perfil; "
+                    "el commit fue cancelado para evitar mezclar cambios."
+                )
+                return
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if extracted:
             message = f"Extrae {filename} - {timestamp}"
@@ -831,8 +861,82 @@ class IABrowser(QMainWindow):
 
     def _open_codex_manager(self, folder: str):
         Path(folder).mkdir(parents=True, exist_ok=True)
-        dialog = AIAgentsDialog(self, folder)
-        dialog.exec()
+        dialog = AIAgentsDialog(
+            self,
+            folder,
+            profile_id=self.current_profile_id,
+            profile_ids=[profile["id"] for profile in self.profile_manager.profiles],
+            profile_names={
+                profile["id"]: profile["name"]
+                for profile in self.profile_manager.profiles
+            },
+            auth_url_handler=self._open_copilot_auth_url,
+            auth_success_handler=self._close_copilot_auth_tab,
+        )
+        dialog.setModal(False)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._agent_dialogs.append(dialog)
+        dialog.destroyed.connect(
+            lambda _object=None, item=dialog: (
+                self._agent_dialogs.remove(item)
+                if item in self._agent_dialogs else None
+            )
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _open_copilot_auth_url(self, url: str, profile_id: str, code: str = ""):
+        """Open Copilot device authorization inside matching IA profile."""
+        webview = self._add_tab(profile_id=profile_id)
+        webview._copilot_auth_code = code
+        webview.loadFinished.connect(
+            lambda ok, view=webview, expected=code: self._fill_copilot_code(
+                view, expected, ok
+            )
+        )
+        webview.setUrl(QUrl(url))
+        self.statusBar().showMessage(
+            f"Autenticación de Copilot abierta en el perfil {profile_id}. "
+            "Completá el código mostrado por Copilot.",
+            10000,
+        )
+
+    def _fill_copilot_code(self, webview, code: str, ok: bool):
+        if not ok or not code:
+            return
+        script = f"""
+(() => {{
+  const code = {json.dumps(code)};
+  const input = document.querySelector(
+    'input[name="user_code"], input[id*="code" i], input[autocomplete="one-time-code"], input[type="text"]'
+  );
+  if (!input) return false;
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype, 'value'
+  ).set;
+  setter.call(input, code);
+  input.dispatchEvent(new Event('input', {{bubbles: true}}));
+  input.dispatchEvent(new Event('change', {{bubbles: true}}));
+  const form = input.form;
+  const button = form?.querySelector('button[type="submit"], input[type="submit"]')
+    || [...document.querySelectorAll('button')].find(item => /continue|authorize|submit/i.test(item.innerText));
+  if (button) button.click();
+  else if (form) form.submit();
+  return true;
+}})()
+"""
+        webview.page().runJavaScript(script)
+
+    def _close_copilot_auth_tab(self, profile_id: str):
+        for index in range(self.tabs.count() - 1, -1, -1):
+            widget = self.tabs.widget(index)
+            if getattr(widget, "_copilot_auth_code", None) is not None:
+                meta = self.tab_data.get(id(widget), {})
+                if meta.get("profile_id") == profile_id:
+                    self.tabs.removeTab(index)
+                    widget.deleteLater()
+                    return
 
     def _change_profile_home(self, profile_id: str):
         data = self.profile_manager.get_profile(profile_id)

@@ -42,6 +42,7 @@ Todo se guarda en `~/.ia_browser/`:
 ├── profiles.json      # Perfiles (nombre, carpeta, zoom, git)
 ├── collections.json     # Colecciones y sus marcadores
 ├── session.json            # Última sesión (pestañas abiertas)
+├── copilot_profiles/<id>/  # Estado separado de Copilot CLI por perfil
 └── profiles/<id>/             # storage + cache de cada perfil (Chromium)
     ├── storage/
     └── cache/
@@ -76,9 +77,11 @@ Todo se guarda en `~/.ia_browser/`:
   - **🧹 Codex** — analiza la rama cruda y arma commits prolijos y
     descriptivos, agrupando cambios y evitando clutter de
     agregar/eliminar el mismo archivo varias veces.
-  - **📝 Copilot** — lee el código para entender el proyecto, pero
-    solo crea o modifica documentación (README.md, AGENTS.md, .txt,
-    etc), nunca código fuente.
+  - **📝 Copilot** — corre dentro del diálogo, sin abrir una consola
+    externa. Cada perfil usa su propio `COPILOT_HOME`; el botón de login
+    usa device flow y abre `github.com/login/device` en una pestaña IA
+    con el perfil correspondiente. La salida permite responder por stdin
+    y detecta límites para rotar al siguiente perfil.
 
   Cada agente tiene su propio comando (editable, con placeholder
   `{prompt}`) y su propio prompt (generado desde una plantilla,
@@ -89,4 +92,11 @@ Todo se guarda en `~/.ia_browser/`:
   - Codex: `npm install -g @openai/codex` y `codex login`
   - Copilot: GitHub Copilot CLI (requiere plan de Copilot activo)
 
+  La separación de credenciales depende del soporte de `COPILOT_HOME` y
+  del almacenamiento seguro disponible en Windows. No se guardan tokens
+  dentro de IA Browser.
 
+  Cuando un perfil tiene Git activo, sus descargas usan ramas separadas:
+  `profile/<id>-raw` para cambios automáticos y `profile/<id>` para trabajo
+  de agentes. Copilot recibe el estado y los diffs recientes del repositorio
+  en cada ejecución para conservar cambios hechos por otros agentes.
