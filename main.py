@@ -10,7 +10,6 @@ Ejecutar con: python main.py
 import sys
 import os
 import shutil
-import html as html_escape_module
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -44,6 +43,7 @@ from web_common import local_viewer
 from web_common.pdf_tab import PdfTab
 from web_common.tabs import VIDEO_EXTS, UnifiedWebTab
 from web_common.video_tab import VideoTab
+from web_common import folder_viewer
 from web_common.web_profiles import build_web_profile
 from codex_manager import AIAgentsDialog
 
@@ -409,6 +409,7 @@ class IABrowser(QMainWindow):
             qt_profile,
             parent_window=self,
             folder_view_handler=self._render_folder_view,
+            file_view_handler=self._render_file_view,
             new_tab_handler=self._handle_new_tab_request,
             new_window_handler=self._handle_new_window_request,
             url_changed_handler=self._on_tab_url_changed,
@@ -648,15 +649,18 @@ class IABrowser(QMainWindow):
                     tab.setUrl(QUrl.fromLocalFile(dest))
                 return
             if ext == ".rar":
-                try:
-                    html = local_viewer.render_rar_listing(local_path)
-                except ImportError:
-                    html = local_viewer.render_missing_dependency(
+                dest = local_viewer.extract_rar(local_path, cache_dir)
+                if dest:
+                    tab.setUrl(QUrl.fromLocalFile(dest))
+                    return
+                tab.page().setHtml(
+                    local_viewer.render_error(
                         local_path,
-                        "rarfile",
-                        "Además necesitás tener instalado unrar o unar en el sistema para leer el archivo.",
-                    )
-                tab.page().setHtml(html, QUrl.fromLocalFile(local_path))
+                        "No se pudo extraer. Instalá 7-Zip o WinRAR, "
+                        "o configurá 7z/unrar/unar en el PATH.",
+                    ),
+                    QUrl.fromLocalFile(local_path),
+                )
                 return
             if ext == ".epub":
                 tab.setUrl(QUrl.fromLocalFile(local_viewer.extract_epub_root(local_path, cache_dir)))
@@ -667,124 +671,11 @@ class IABrowser(QMainWindow):
                 QUrl.fromLocalFile(local_path),
             )
 
-    # ------------------------------------------------------------------
-    # Vista custom de carpetas (file:// -> HTML propio con commits git)
-    # ------------------------------------------------------------------
-
     def _render_folder_view(self, page, folder_path: str):
-        """Callback pasado a CustomWebEnginePage: en vez del listado
-        nativo de Chromium, renderiza una página propia con el contenido
-        de la carpeta a la izquierda y los commits de git (si es un
-        repo) a la derecha. Se llama automáticamente cada vez que se
-        navega a un file:// que apunta a una carpeta (incluida la
-        navegación inicial y los clicks en subcarpetas dentro de la
-        misma vista)."""
-        html_content = self._build_folder_html(folder_path)
-        base_url = QUrl.fromLocalFile(str(Path(folder_path)) + "/")
-        page.setHtml(html_content, base_url)
+        folder_viewer.render_folder_view(page, folder_path)
 
-    def _build_folder_html(self, folder_path: str) -> str:
-        esc = html_escape_module.escape
-        folder = Path(folder_path)
-
-        entries = []
-        try:
-            entries = sorted(folder.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
-        except OSError:
-            pass
-
-        rows = []
-        if folder.parent != folder:
-            parent_url = QUrl.fromLocalFile(str(folder.parent) + "/").toString()
-            rows.append(f'<a class="entry dir" href="{esc(parent_url)}">⬆ .. (subir un nivel)</a>')
-
-        for entry in entries:
-            if entry.name.startswith("."):
-                continue
-            if entry.is_dir():
-                url = QUrl.fromLocalFile(str(entry) + "/").toString()
-                rows.append(f'<a class="entry dir" href="{esc(url)}">📁 {esc(entry.name)}</a>')
-            else:
-                url = QUrl.fromLocalFile(str(entry)).toString()
-                try:
-                    size_kb = entry.stat().st_size / 1024
-                    size_txt = f"{size_kb:,.1f} KB" if size_kb < 1024 else f"{size_kb / 1024:,.1f} MB"
-                except OSError:
-                    size_txt = ""
-                rows.append(
-                    f'<a class="entry file" href="{esc(url)}">📄 {esc(entry.name)}'
-                    f'<span class="size">{esc(size_txt)}</span></a>'
-                )
-
-        files_html = "\n".join(rows) if rows else '<p class="empty">Carpeta vacía</p>'
-
-        has_git = GitVersioning.has_repo(folder_path)
-        if has_git:
-            commits = GitVersioning.get_log(folder_path, limit=50)
-            if commits:
-                commit_rows = "\n".join(
-                    f'<div class="commit">{esc(c)}</div>' for c in commits
-                )
-                git_html = f'<div class="git-status">🔀 {len(commits)} commit(s)</div>{commit_rows}'
-            else:
-                git_html = '<div class="git-status">🔀 Repositorio git (sin commits todavía)</div>'
-        else:
-            git_html = '<div class="git-status muted">🔀 Esta carpeta no es un repositorio git</div>'
-
-        return f"""<!DOCTYPE html>
-            <html>
-            <head>
-            <meta charset="utf-8">
-            <style>
-            * {{ box-sizing: border-box; }}
-            body {{
-                margin: 0; padding: 0;
-                font-family: -apple-system, "Segoe UI", Arial, sans-serif;
-                background: #1e1e1e; color: #e6e6e6;
-            }}
-            header {{
-                padding: 14px 20px; border-bottom: 1px solid #3a3a3a;
-                font-size: 14px; color: #a0a0a0; word-break: break-all;
-            }}
-            .columns {{ display: flex; height: calc(100vh - 52px); }}
-            .col {{ width: 50%; overflow-y: auto; padding: 12px 16px; }}
-            .col-left {{ border-right: 1px solid #3a3a3a; }}
-            .col h2 {{
-                font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
-                color: #888; margin: 0 0 10px 0;
-            }}
-            a.entry {{
-                display: flex; justify-content: space-between; align-items: center;
-                padding: 7px 10px; border-radius: 6px; color: #e6e6e6;
-                text-decoration: none; font-size: 13.5px;
-            }}
-            a.entry:hover {{ background: #2c2c2c; }}
-            a.entry.dir {{ font-weight: 600; }}
-            .size {{ color: #888; font-size: 11.5px; margin-left: 12px; white-space: nowrap; }}
-            .empty {{ color: #777; font-size: 13px; padding: 8px 10px; }}
-            .git-status {{ font-size: 12.5px; color: #a0a0a0; margin-bottom: 10px; }}
-            .git-status.muted {{ color: #666; }}
-            .commit {{
-                font-size: 12.5px; font-family: "SF Mono", Consolas, monospace;
-                padding: 6px 10px; border-radius: 6px; color: #d0d0d0;
-            }}
-            .commit:hover {{ background: #2c2c2c; }}
-            </style>
-            </head>
-            <body>
-            <header>📁 {esc(str(folder))}</header>
-            <div class="columns">
-                <div class="col col-left">
-                <h2>Contenido</h2>
-                {files_html}
-                </div>
-                <div class="col col-right">
-                <h2>Historial de Git</h2>
-                {git_html}
-                </div>
-            </div>
-            </body>
-            </html>"""
+    def _render_file_view(self, page, file_path: str):
+        folder_viewer.render_file_view(page, file_path)
 
     def _resolve_target_folder(self, tab_meta: dict) -> tuple[str, str]:
         """Devuelve (carpeta, etiqueta) según: primero la Colección de la

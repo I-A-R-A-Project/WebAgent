@@ -14,8 +14,6 @@ Colección), desde un diálogo con pestañas:
   - Copilot: solo lee código para entender el proyecto, pero
     únicamente crea o modifica documentación (README, AGENTS.md, .txt,
     etc) — nunca código fuente.
-
-
 Cada agente tiene su propio comando (editable) y su propio prompt
 (generado desde una plantilla, también editable antes de correr).
 """

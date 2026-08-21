@@ -60,6 +60,9 @@ class CustomWebEnginePage(QWebEnginePage):
         nativo sin ningún traceback de Python. Por eso se difiere con
         QTimer.singleShot(0, ...) para que corra recién en el próximo
         ciclo del event loop, una vez que esta navegación ya se canceló."""
+        from web_common import folder_viewer
+        if is_main_frame and url.scheme() == "browser-action":
+            return not folder_viewer.handle_action(self, url)
         if is_main_frame and self.folder_view_handler and url.scheme() == "file":
             local_path = url.toLocalFile()
             if local_path and Path(local_path).is_dir():

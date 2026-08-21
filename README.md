@@ -88,5 +88,5 @@ Todo se guarda en `~/.ia_browser/`:
   si no las encuentra en el PATH:
   - Codex: `npm install -g @openai/codex` y `codex login`
   - Copilot: GitHub Copilot CLI (requiere plan de Copilot activo)
-  - Gemini: `npm install -g @google/gemini-cli` y login con Google
+
 
