@@ -224,6 +224,7 @@ class AIAgentsDialog(QDialog):
         self.auth_url_handler = auth_url_handler
         self.auth_success_handler = auth_success_handler
         self.copilot_home = Path.home() / ".ia_browser" / "copilot_profiles" / self.profile_id
+        self.raw_branch, self.profile_branch = GitVersioning.profile_branch_names(self.profile_id)
         self.config_store = AgentConfigStore()
         config = self.config_store.get(self.folder)
         if config["source_branch"] == "master" and config["target_branch"] == "main":
@@ -240,7 +241,6 @@ class AIAgentsDialog(QDialog):
         self.auth_urls_seen = set()
         self.copilot_output_buffer = ""
         self.copilot_auth_code = ""
-        self.raw_branch, self.profile_branch = GitVersioning.profile_branch_names(self.profile_id)
 
         self.setWindowTitle(f"Agentes IA — {Path(folder).name}")
         self.resize(680, 640)

@@ -40,8 +40,8 @@ from web_common.session import (
 )
 from web_common.sidebar import AppPanelOverlay, SidebarContainer, SidebarRail
 from web_common import local_viewer
-from web_common.pdf_tab import PdfTab
-from web_common.tabs import VIDEO_EXTS, UnifiedWebTab
+from web_common.tabs import VIDEO_EXTS, UnifiedWebTab, install_tab_context_menu
+from web_common.media_tabs import open_video_tab as add_video_tab
 from web_common.video_tab import VideoTab
 from web_common import folder_viewer
 from web_common.web_profiles import build_web_profile
@@ -381,6 +381,11 @@ class IABrowser(QMainWindow):
         self.tabs.tabBarClicked.connect(self._on_tab_bar_clicked)
         self.tabs.tabBar().tabMoved.connect(self._on_tab_moved)
         self._setup_plus_tab()
+        install_tab_context_menu(
+            self.tabs,
+            close_tab=self._close_tab,
+            plus_widget=self.plus_widget,
+        )
         right_layout.addWidget(self.tabs)
 
         right_container = QWidget()
@@ -639,27 +644,10 @@ class IABrowser(QMainWindow):
 
     def handle_special_local_file(self, tab, local_path):
         ext = os.path.splitext(local_path)[1].lower()
-        if ext == ".pdf":
-            self.open_pdf_tab(local_path)
-            return
         if ext in VIDEO_EXTS:
-            self.open_video_tab(local_path)
+            add_video_tab(self.tabs, local_path, self, title_limit=22)
             return
         self._open_local_target(tab, local_path)
-
-    def open_pdf_tab(self, path):
-        tab = PdfTab(path, self)
-        title = os.path.basename(path)
-        index = self.tabs.addTab(tab, title[:30] or "PDF")
-        self.tabs.setCurrentIndex(index)
-        return tab
-
-    def open_video_tab(self, path):
-        tab = VideoTab(path, self)
-        title = os.path.basename(path)
-        index = self.tabs.addTab(tab, title[:30] or "Video")
-        self.tabs.setCurrentIndex(index)
-        return tab
 
     def _open_local_target(self, tab, local_path):
         ext = os.path.splitext(local_path)[1].lower()
@@ -1409,12 +1397,6 @@ class IABrowser(QMainWindow):
             return False
 
         for t in valid_tabs:
-            if t["url"].startswith("file://"):
-                local_path = QUrl(t["url"]).toLocalFile()
-                if os.path.splitext(local_path)[1].lower() == ".pdf":
-                    pdf_tab = self.open_pdf_tab(local_path)
-                    restore_tab_metadata(self.tabs, self.tabs.indexOf(pdf_tab), t)
-                    continue
             webview = self._add_tab(profile_id=t["profile_id"], collection_id=t.get("collection_id"))
             restore_tab_metadata(self.tabs, self.tabs.indexOf(webview), t)
             webview.setUrl(QUrl(t["url"]))
