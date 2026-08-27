@@ -29,7 +29,7 @@ from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QTextEdit,
     QPushButton, QLabel, QDialogButtonBox, QMessageBox, QGroupBox,
-    QTabWidget, QWidget, QComboBox
+    QTabWidget, QWidget, QComboBox, QCheckBox
 )
 from PyQt6.QtGui import QFont
 
@@ -523,7 +523,15 @@ class AIAgentsDialog(QDialog):
         btn_row.addWidget(regen_btn)
         btn_row.addWidget(run_btn)
         btn_row.addWidget(stop_btn)
+
         if agent_id == "copilot":
+            # checkbox to control using template when regenerating
+            use_template_cb = QCheckBox("Usar plantilla al regenerar")
+            use_template_cb.setChecked(False)
+            btn_row.addWidget(use_template_cb)
+            add_template_btn = QPushButton("➕ Agregar plantilla a copilot-instructions.md")
+            add_template_btn.clicked.connect(lambda: self._add_template_to_instructions())
+            btn_row.addWidget(add_template_btn)
             login_btn = QPushButton("🔐 Iniciar sesión en este perfil")
             login_btn.clicked.connect(self._start_copilot_login)
             btn_row.addWidget(login_btn)
@@ -533,6 +541,11 @@ class AIAgentsDialog(QDialog):
             "command_edit": command_edit, "task_edit": task_edit, "prompt_edit": prompt_edit,
             "run_btn": run_btn, "stop_btn": stop_btn,
         }
+
+        # store copilot-specific widgets
+        if agent_id == "copilot":
+            self.agent_widgets[agent_id]["use_template_cb"] = use_template_cb
+            self.agent_widgets[agent_id]["add_template_btn"] = add_template_btn
 
         regen_btn.clicked.connect(lambda: self._regenerate_prompt(agent_id))
         run_btn.clicked.connect(lambda: self._run_agent(agent_id))
@@ -544,6 +557,18 @@ class AIAgentsDialog(QDialog):
         defn = AGENT_DEFS[agent_id]
         cfg = self.config_store.get(self.folder)
         widgets = self.agent_widgets[agent_id]
+
+        # For Copilot: only inject the template if the "use_template" checkbox is checked
+        if agent_id == "copilot":
+            use_template = widgets.get("use_template_cb")
+            if use_template and not use_template.isChecked():
+                # If the prompt box is empty, populate it once; otherwise leave user edits intact
+                if not widgets["prompt_edit"].toPlainText().strip():
+                    prompt = defn["prompt_template"].format(
+                        source_branch=cfg["source_branch"], target_branch=cfg["target_branch"]
+                    )
+                    widgets["prompt_edit"].setPlainText(prompt)
+                return
 
         if defn["needs_task"]:
             task = widgets["task_edit"].toPlainText().strip() or "(completá la descripción de la tarea arriba)"
@@ -872,6 +897,80 @@ class AIAgentsDialog(QDialog):
         if self.process:
             self.process.kill()
             self._append_log("\n--- Detenido por el usuario ---\n")
+
+    def _add_template_to_instructions(self):
+        """Append the COPILOT_PROMPT_TEMPLATE to .github/copilot-instructions.md and commit.
+        If the repository is not initialized, ask the user whether to initialize it.
+        """
+        gh_dir = Path(self.folder) / ".github"
+        gh_dir.mkdir(parents=True, exist_ok=True)
+        target = gh_dir / "copilot-instructions.md"
+        template_text = COPILOT_PROMPT_TEMPLATE
+        # Simple uniqueness check
+        existing = ""
+        if target.exists():
+            try:
+                existing = target.read_text(encoding='utf-8')
+            except Exception:
+                existing = ""
+            if "Tu tarea principal es asistir como agente AI principal" in existing:
+                QMessageBox.information(self, "Plantilla existente", "El archivo ya contiene la plantilla de Copilot.")
+                return
+        # Prepare content to append
+        content = (
+            "\n\n---\n### Copilot prompt template (auto-added)\n\n```text\n"
+            + template_text.replace('```', '` ` `')
+            + "\n```\n"
+        )
+        try:
+            if target.exists():
+                with open(target, "a", encoding='utf-8') as f:
+                    f.write(content)
+            else:
+                header = "# Copilot instructions\n\n"
+                with open(target, "w", encoding='utf-8') as f:
+                    f.write(header + content)
+        except Exception as e:
+            QMessageBox.warning(self, "Error al escribir archivo", f"No se pudo escribir {target}: {e}")
+            return
+
+        # Commit if repo available / desired
+        if GitVersioning.has_repo(self.folder):
+            if not GitVersioning.check_identity(self.folder):
+                QMessageBox.warning(self, "Falta identidad de git", "Configura user.name y user.email antes de commitear.\n\nEjemplo:\n  git config --global user.name \"Tu Nombre\"\n  git config --global user.email \"tu@email.com\"")
+                return
+            rel = str(Path('.github') / 'copilot-instructions.md')
+            ok, out, err = GitVersioning.run(self.folder, ["add", rel])
+            if not ok:
+                QMessageBox.warning(self, "Git add falló", f"git add falló:\n{err}")
+                return
+            commit_msg = "docs: add Copilot prompt template to copilot-instructions.md\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+            ok, out, err = GitVersioning.run(self.folder, ["commit", "-m", commit_msg])
+            if ok:
+                QMessageBox.information(self, "Commit creado", "Se agregó la plantilla y se creó un commit.")
+            else:
+                QMessageBox.warning(self, "Commit falló", f"git commit falló:\n{err}")
+        else:
+            # Not a repo — ask user whether to init and commit
+            resp = QMessageBox.question(self, "No es repo git", "Esta carpeta no es un repositorio git. ¿Inicializar repo y commitear la plantilla?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if resp == QMessageBox.StandardButton.Yes:
+                GitVersioning.ensure_repo(self.folder)
+                if not GitVersioning.check_identity(self.folder):
+                    QMessageBox.warning(self, "Falta identidad de git", "Configura user.name y user.email antes de commitear.")
+                    return
+                rel = str(Path('.github') / 'copilot-instructions.md')
+                ok, out, err = GitVersioning.run(self.folder, ["add", rel])
+                if not ok:
+                    QMessageBox.warning(self, "Git add falló", f"git add falló:\n{err}")
+                    return
+                commit_msg = "docs: add Copilot prompt template to copilot-instructions.md\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+                ok, out, err = GitVersioning.run(self.folder, ["commit", "-m", commit_msg])
+                if ok:
+                    QMessageBox.information(self, "Repo inicializado y commit creado", "Se inicializó el repo y se creó el commit con la plantilla.")
+                else:
+                    QMessageBox.warning(self, "Commit falló", f"git commit falló:\n{err}")
+            else:
+                QMessageBox.information(self, "Archivo creado", f"Se creó {target} sin commit. Si querés commitearlo, inicializá un repo en esta carpeta y commiteá manualmente.")
 
     def _run_autorun(self, command: str):
         """Ejecuta un comando local (autorun) en la carpeta y vuelca su salida al log."""
