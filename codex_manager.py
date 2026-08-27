@@ -274,13 +274,19 @@ class AIAgentsDialog(QDialog):
             self._build_agent_tab(tab, agent_id)
             self.agents_tabs.addTab(tab, AGENT_DEFS[agent_id]["short_label"])
         layout.addWidget(self.agents_tabs, 1)
-
+ 
         self._build_log_section(layout)
-
+ 
+        # Merge preview button (hidden until a preview run produces commits)
+        self.preview_merge_btn = QPushButton("🔀 Aplicar preview a rama destino (merge)")
+        self.preview_merge_btn.setVisible(False)
+        self.preview_merge_btn.clicked.connect(self._merge_preview_into_target)
+        layout.addWidget(self.preview_merge_btn)
+ 
         close_btn = QPushButton("Cerrar")
         close_btn.clicked.connect(self.reject)
         layout.addWidget(close_btn)
-
+ 
         self._refresh_repo_status()
 
     def _copilot_environment(self):
@@ -680,6 +686,19 @@ class AIAgentsDialog(QDialog):
         if agent_id == "copilot":
             prompt_for_process += self._git_context_for_prompt()
 
+        # If preview requested, create a temporary preview branch from target
+        if preview:
+            cfg = self.config_store.get(self.folder)
+            target_branch = cfg.get("target_branch")
+            import time
+            preview_branch = f"preview/{int(time.time())}"
+            ok, _, err = GitVersioning.run(self.folder, ["checkout", "-b", preview_branch, target_branch])
+            if not ok:
+                QMessageBox.warning(self, "Error", f"No se pudo crear la rama de preview: {err}")
+                return
+            self.preview_branch = preview_branch
+            self.preview_mode = True
+
         try:
             argv = self._build_argv(command_template, prompt_for_process)
         except ValueError as e:
@@ -866,6 +885,13 @@ class AIAgentsDialog(QDialog):
                 else:
                     self._append_log(f"\n--- No se pudo obtener diff de preview: {diff_err} ---\n")
                 # cleanup: checkout target and delete preview branch
+                # show list of commits introduced in preview
+                okc, commits_out, commits_err = GitVersioning.run(self.folder, ["log", "--pretty=format:%h %s", f"{target}..{preview}"], timeout=30)
+                if okc and commits_out.strip():
+                    self._append_log("\n--- Commits in preview branch (new) ---\n")
+                    self._append_log(commits_out)
+                    # reveal merge button so user can apply preview as a merge commit
+                    self.preview_merge_btn.setVisible(True)
                 GitVersioning.run(self.folder, ["checkout", target])
                 GitVersioning.run(self.folder, ["branch", "-D", preview])
             except Exception as e:
@@ -916,6 +942,39 @@ class AIAgentsDialog(QDialog):
         if self.process:
             self.process.kill()
             self._append_log("\n--- Detenido por el usuario ---\n")
+
+    def _merge_preview_into_target(self):
+        """Merge the preview branch into the configured target branch as a single merge commit.
+        This is a conservative apply action after a preview run.
+        """
+        if not getattr(self, 'preview_branch', None):
+            QMessageBox.information(self, "No hay preview", "No hay una rama de preview activa para aplicar.")
+            return
+        cfg = self.config_store.get(self.folder)
+        target = cfg.get('target_branch')
+        preview = self.preview_branch
+        resp = QMessageBox.question(self, "Aplicar preview?", f"Aplicar los cambios de la rama '{preview}' a '{target}' mediante un merge (merge commit)?")
+        if resp != QMessageBox.StandardButton.Yes:
+            return
+        # Ask for commit message
+        from PyQt6.QtWidgets import QInputDialog
+        msg, ok = QInputDialog.getText(self, "Mensaje de merge", "Mensaje para el commit de merge:", text=f"Merge preview {preview} into {target}")
+        if not ok:
+            return
+        # Checkout target and merge
+        okc, outc, errc = GitVersioning.run(self.folder, ["checkout", target])
+        if not okc:
+            QMessageBox.warning(self, "Error", f"No se pudo cambiar a la rama destino: {errc}")
+            return
+        okm, outm, errm = GitVersioning.run(self.folder, ["merge", "--no-ff", preview, "-m", msg], timeout=60)
+        if okm:
+            QMessageBox.information(self, "Merge aplicado", "Los cambios de preview se aplicaron a la rama destino.")
+            # delete preview branch
+            GitVersioning.run(self.folder, ["branch", "-D", preview])
+            self.preview_branch = None
+            self.preview_merge_btn.setVisible(False)
+        else:
+            QMessageBox.warning(self, "Merge falló", f"El merge falló:\n{errm}")
 
     def _add_template_to_instructions(self):
         """Append the COPILOT_PROMPT_TEMPLATE to .github/copilot-instructions.md and commit.
@@ -990,6 +1049,8 @@ class AIAgentsDialog(QDialog):
                     QMessageBox.warning(self, "Commit falló", f"git commit falló:\n{err}")
             else:
                 QMessageBox.information(self, "Archivo creado", f"Se creó {target} sin commit. Si querés commitearlo, inicializá un repo en esta carpeta y commiteá manualmente.")
+        # hide preview merge button until next preview run
+        self.preview_merge_btn.setVisible(False)
 
     def _run_autorun(self, command: str):
         """Ejecuta un comando local (autorun) en la carpeta y vuelca su salida al log."""
