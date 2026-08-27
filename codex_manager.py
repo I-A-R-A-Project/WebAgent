@@ -69,32 +69,12 @@ funcionalidad)."""
 
 COPILOT_PROMPT_TEMPLATE = """Estás en un repositorio git, en la rama '{target_branch}'.
 
-Tu tarea principal es asistir como agente AI principal del proyecto. Podés LEER y
-ENTENDER todo el código fuente y, cuando corresponda, PROPONER y REALIZAR
-cambios en archivos de código o documentación. Tus responsabilidades incluyen:
+Tu tarea principal es asistir como agente AI principal del proyecto. Este bloque
+es la plantilla oficial de instrucciones para Copilot y se usa SOLO en
+`.github/copilot-instructions.md` cuando el usuario la agrega desde la UI.
+"""
 
-1. Analizar el contexto del repo (commits recientes, diffs en la rama cruda)
-   y proponer cambios concretos y limitados que mejoren funcionalidad,
-   estructura o calidad del código.
-2. Aplicar refactorings seguros (renombrar/mover símbolos, extraer funciones,
-   reorganizar módulos) en commits separados, claros y atómicos.
-3. Crear o actualizar documentación donde sea necesario.
-4. Ejecutar (o sugerir) comandos de verificación y tests; si hay un fallo,
-   reportar el error y adjuntar diffs y salida relevante.
-
-Reglas importantes:
-- Mantener el working tree limpio: cada conjunto de cambios que el agente
-  aplica debe venir con un commit descriptivo en '{target_branch}'.
-- Evitar cambios masivos no revisados; preferir commits pequeños y revertibles.
-- Cuando realices cambios de código, procura no modificar estilos/formatting
-  salvo que sea necesario y justificado.
-- Si una operación puede automatizarse con un script local (ej: renombrar
-  símbolos), preferí ejecutar el script o indicar el comando exacto en vez
-  de pedir intervención manual.
-
-Dejá los cambios commiteados en '{target_branch}' con mensajes claros y
-apegados al estilo imperativo. Si no tenés permisos para push, limita el
-trabajo a commits locales y documentá cómo revisar/aplicar los cambios."""
+COPILOT_DEFAULT_PROMPT = """Actuá como el agente Copilot del repositorio. Lee el código y responde según la tarea indicada. Si se solicitan cambios, proponé commits atómicos y comandos de verificación. Mantén mensajes breves."""
 
 
 AGENT_DEFS = {
@@ -116,7 +96,7 @@ AGENT_DEFS = {
         "default_command": 'copilot -i "{prompt}" --allow-all',
         "needs_task": False,
         "needs_source_branch": True,
-        "prompt_template": COPILOT_PROMPT_TEMPLATE,
+        "prompt_template": COPILOT_DEFAULT_PROMPT,
         "check_binary": "copilot",
         "install_hint": "requiere GitHub Copilot CLI (docs.github.com/copilot) y un plan de Copilot activo",
     },
