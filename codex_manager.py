@@ -498,10 +498,12 @@ class AIAgentsDialog(QDialog):
         btn_row = QHBoxLayout()
         regen_btn = QPushButton("🔄 Regenerar desde plantilla")
         run_btn = QPushButton(f"▶ Ejecutar {defn['short_label']}")
+        preview_btn = QPushButton(f"👁️ Previsualizar {defn['short_label']}")
         stop_btn = QPushButton("⏹ Detener")
         stop_btn.setEnabled(False)
         btn_row.addWidget(regen_btn)
         btn_row.addWidget(run_btn)
+        btn_row.addWidget(preview_btn)
         btn_row.addWidget(stop_btn)
 
         if agent_id == "copilot":
@@ -530,6 +532,9 @@ class AIAgentsDialog(QDialog):
         regen_btn.clicked.connect(lambda: self._regenerate_prompt(agent_id))
         run_btn.clicked.connect(lambda: self._run_agent(agent_id))
         stop_btn.clicked.connect(self._stop_current_agent)
+
+        # connect preview button
+        preview_btn.clicked.connect(lambda: self._run_agent(agent_id, preview=True))
 
         self._regenerate_prompt(agent_id)
 
@@ -598,7 +603,7 @@ class AIAgentsDialog(QDialog):
 
     # ---------- Ejecutar un agente ----------
 
-    def _run_agent(self, agent_id: str):
+    def _run_agent(self, agent_id: str, preview: bool = False):
         defn = AGENT_DEFS[agent_id]
 
         if shutil.which(defn["check_binary"]) is None:
@@ -627,6 +632,8 @@ class AIAgentsDialog(QDialog):
 
         widgets = self.agent_widgets[agent_id]
         extra = {"command": widgets["command_edit"].text().strip() or defn["default_command"]}
+        # track preview button for UI state
+        widgets["preview_btn"] = widgets.get("preview_btn") or None
         if defn["needs_task"]:
             extra["last_task"] = widgets["task_edit"].toPlainText().strip()
         self.config_store.set_agent_field(self.folder, agent_id, **extra)
@@ -691,6 +698,12 @@ class AIAgentsDialog(QDialog):
         self.active_agent = agent_id
         self._set_other_agents_enabled(agent_id, False)
         widgets["run_btn"].setEnabled(False)
+        # disable preview button while running
+        # preview button stored as agent_widgets[agent_id]["preview_btn"] if present
+        try:
+            widgets.get("preview_btn") and widgets["preview_btn"].setEnabled(False)
+        except Exception:
+            pass
         widgets["stop_btn"].setEnabled(True)
         self.stdin_edit.setEnabled(True)
         self.send_stdin_btn.setEnabled(True)
@@ -712,6 +725,11 @@ class AIAgentsDialog(QDialog):
         # de comillas que rompía el prompt antes.
         if agent_id == "copilot":
             self.process.setProcessEnvironment(self._copilot_environment())
+
+        # If preview mode, ensure we run on the preview branch (already checked out)
+        if preview:
+            self._append_log(f"ℹ Ejecutando en modo PREVIEW (branch: {getattr(self, 'preview_branch', '(unknown)')})")
+
         if shutil.which("cmd.exe"):
             self.process.start("cmd.exe", ["/c", program] + args)
         else:
@@ -834,6 +852,27 @@ class AIAgentsDialog(QDialog):
             if cmd:
                 self._append_log(f"\n--- Ejecutando autorun: {cmd} ---\n")
                 self._run_autorun(cmd)
+
+        # If we were running in preview, after autorun/refresh we should show diff and cleanup
+        if getattr(self, 'preview_mode', False) and getattr(self, 'preview_branch', None):
+            try:
+                cfg = self.config_store.get(self.folder)
+                target = cfg.get('target_branch')
+                preview = self.preview_branch
+                ok, diff_out, diff_err = GitVersioning.run(self.folder, ["diff", f"{target}..{preview}"], timeout=60)
+                if ok:
+                    self._append_log("\n--- Preview diff (target..preview) ---\n")
+                    self._append_log(diff_out[:20000])
+                else:
+                    self._append_log(f"\n--- No se pudo obtener diff de preview: {diff_err} ---\n")
+                # cleanup: checkout target and delete preview branch
+                GitVersioning.run(self.folder, ["checkout", target])
+                GitVersioning.run(self.folder, ["branch", "-D", preview])
+            except Exception as e:
+                self._append_log(f"\n--- Error limpiando preview: {e} ---\n")
+            finally:
+                self.preview_mode = False
+                self.preview_branch = None
 
         if start_login:
             QTimer.singleShot(250, self._start_copilot_login)
