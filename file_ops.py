@@ -4,14 +4,11 @@ file_ops.py - Utilidades de archivo para IA Browser.
 Contiene:
   - GitVersioning: versiona con git una carpeta de descargas, en vez
     de guardar los archivos repetidos con numeración (archivo(1).txt).
-  - FileOps: eliminado seguro (papelera o git rm) y división/unión de
-    archivos grandes en partes con verificación por hash.
+  - FileOps: eliminado seguro (papelera o git rm) y utilidades de archivos
 """
 
-import json
 import shutil
 import subprocess
-import hashlib
 import re
 from pathlib import Path
 from datetime import datetime
@@ -282,64 +279,3 @@ class FileOps:
         except Exception:
             return False
 
-    @staticmethod
-    def split_file(filepath: str, chunk_size_mb: int) -> list:
-        """Divide un archivo en partes de tamaño fijo + un manifest.json
-        con el nombre original y el hash SHA-256 para verificar la unión."""
-        src = Path(filepath)
-        chunk_size = max(1, chunk_size_mb) * 1024 * 1024
-        parts = []
-        sha256 = hashlib.sha256()
-        index = 0
-        with open(src, "rb") as f:
-            while True:
-                data = f.read(chunk_size)
-                if not data:
-                    break
-                sha256.update(data)
-                index += 1
-                part_path = Path(str(src) + f".part{index:03d}")
-                with open(part_path, "wb") as out:
-                    out.write(data)
-                parts.append(part_path.name)
-
-        manifest = {
-            "original_name": src.name,
-            "parts": parts,
-            "sha256": sha256.hexdigest(),
-            "created": datetime.now().isoformat(),
-        }
-        manifest_path = Path(str(src) + ".manifest.json")
-        with open(manifest_path, "w") as f:
-            json.dump(manifest, f, indent=2)
-        return parts
-
-    @staticmethod
-    def join_files(manifest_path: str) -> str:
-        """Reconstruye el archivo original a partir de un manifest.json,
-        verificando el hash SHA-256. Devuelve la ruta resultante, o ''
-        si falta alguna parte o el hash no coincide."""
-        manifest_file = Path(manifest_path)
-        with open(manifest_file, "r") as f:
-            manifest = json.load(f)
-
-        folder = manifest_file.parent
-        output_path = folder / manifest["original_name"]
-        sha256 = hashlib.sha256()
-        with open(output_path, "wb") as out:
-            for part_name in manifest["parts"]:
-                part_path = folder / part_name
-                if not part_path.exists():
-                    return ""
-                with open(part_path, "rb") as pf:
-                    data = pf.read()
-                    sha256.update(data)
-                    out.write(data)
-
-        if sha256.hexdigest() != manifest.get("sha256"):
-            try:
-                output_path.unlink()
-            except OSError:
-                pass
-            return ""
-        return str(output_path)

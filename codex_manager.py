@@ -69,17 +69,32 @@ funcionalidad)."""
 
 COPILOT_PROMPT_TEMPLATE = """Estás en un repositorio git, en la rama '{target_branch}'.
 
-Tu tarea es EXCLUSIVAMENTE de documentación. Podés LEER todo el código fuente \
-para entender qué hace el proyecto, pero SOLO podés crear o modificar archivos \
-de documentación: README.md, AGENTS.md, CHANGELOG.md, archivos .txt, y \
-archivos .md dentro de carpetas de documentación. NO modifiques ningún archivo \
-de código fuente (.py, .js, .ts, .jsx, .tsx, .cs, .java, etc) bajo ninguna \
-circunstancia — ese trabajo lo hacen otros agentes.
+Tu tarea principal es asistir como agente AI principal del proyecto. Podés LEER y
+ENTENDER todo el código fuente y, cuando corresponda, PROPONER y REALIZAR
+cambios en archivos de código o documentación. Tus responsabilidades incluyen:
 
-Revisá el estado actual del proyecto y actualizá la documentación para que sea \
-precisa y esté al día con el código real: agregá lo que falte, corregí lo que \
-esté desactualizado o sea incorrecto, y dejá los cambios commiteados en \
-'{target_branch}' con un mensaje descriptivo."""
+1. Analizar el contexto del repo (commits recientes, diffs en la rama cruda)
+   y proponer cambios concretos y limitados que mejoren funcionalidad,
+   estructura o calidad del código.
+2. Aplicar refactorings seguros (renombrar/mover símbolos, extraer funciones,
+   reorganizar módulos) en commits separados, claros y atómicos.
+3. Crear o actualizar documentación donde sea necesario.
+4. Ejecutar (o sugerir) comandos de verificación y tests; si hay un fallo,
+   reportar el error y adjuntar diffs y salida relevante.
+
+Reglas importantes:
+- Mantener el working tree limpio: cada conjunto de cambios que el agente
+  aplica debe venir con un commit descriptivo en '{target_branch}'.
+- Evitar cambios masivos no revisados; preferir commits pequeños y revertibles.
+- Cuando realices cambios de código, procura no modificar estilos/formatting
+  salvo que sea necesario y justificado.
+- Si una operación puede automatizarse con un script local (ej: renombrar
+  símbolos), preferí ejecutar el script o indicar el comando exacto en vez
+  de pedir intervención manual.
+
+Dejá los cambios commiteados en '{target_branch}' con mensajes claros y
+apegados al estilo imperativo. Si no tenés permisos para push, limita el
+trabajo a commits locales y documentá cómo revisar/aplicar los cambios."""
 
 
 AGENT_DEFS = {
@@ -95,19 +110,20 @@ AGENT_DEFS = {
         "install_hint": "npm install -g @openai/codex   y luego  codex login",
     },
     "copilot": {
-        "label": "📝 Copilot — Documentación",
+        "label": "🤖 Copilot — Agente principal",
         "short_label": "Copilot",
-        "description": "Lee el código para entender el proyecto, pero solo crea o modifica documentación (README, AGENTS.md, .txt, etc).",
+        "description": "Agente AI principal: puede leer y modificar código y documentación, generar commits atómicos y ejecutar verificaciones de proyecto.",
         "default_command": 'copilot -i "{prompt}" --allow-all',
         "needs_task": False,
-        "needs_source_branch": False,
+        "needs_source_branch": True,
         "prompt_template": COPILOT_PROMPT_TEMPLATE,
         "check_binary": "copilot",
         "install_hint": "requiere GitHub Copilot CLI (docs.github.com/copilot) y un plan de Copilot activo",
     },
+
 }
 
-AGENT_ORDER = ["codex", "copilot"]
+AGENT_ORDER = ["copilot", "codex"]
 
 # Comandos por defecto de versiones anteriores que ya no aplican (se
 # migran solos al default actual si el usuario nunca los tocó a mano).
@@ -153,6 +169,8 @@ class AgentConfigStore:
                 aid: {"command": defn["default_command"], "last_task": ""}
                 for aid, defn in AGENT_DEFS.items()
             },
+            # Autorun: si enabled=True, ejecutar 'autorun.command' tras un run de agente
+            "autorun": {"enabled": False, "command": ""},
         }
 
     def _migrate(self, entry: dict) -> dict:
@@ -173,6 +191,9 @@ class AgentConfigStore:
         else:
             for aid, defn in AGENT_DEFS.items():
                 entry["agents"].setdefault(aid, {"command": defn["default_command"], "last_task": ""})
+
+        # Ensure autorun key exists for backward compatibility
+        entry.setdefault("autorun", {"enabled": False, "command": ""})
 
         for aid, defn in AGENT_DEFS.items():
             current = entry["agents"][aid].get("command", "")
@@ -798,6 +819,17 @@ class AIAgentsDialog(QDialog):
         self.pending_copilot_retry = False
         self.pending_copilot_login = False
         self._refresh_repo_status()
+
+        # Autorun (opcional): ejecutar comando local configurado por carpeta
+        cfg = self.config_store.get(self.folder)
+        autorun = cfg.get("autorun", {})
+        autorun_enabled = bool(autorun.get("enabled")) and bool(autorun.get("command"))
+        if autorun_enabled and not start_login and not retry_copilot:
+            cmd = autorun.get("command")
+            if cmd:
+                self._append_log(f"\n--- Ejecutando autorun: {cmd} ---\n")
+                self._run_autorun(cmd)
+
         if start_login:
             QTimer.singleShot(250, self._start_copilot_login)
         elif retry_copilot:
@@ -840,6 +872,43 @@ class AIAgentsDialog(QDialog):
         if self.process:
             self.process.kill()
             self._append_log("\n--- Detenido por el usuario ---\n")
+
+    def _run_autorun(self, command: str):
+        """Ejecuta un comando local (autorun) en la carpeta y vuelca su salida al log."""
+        if getattr(self, 'autourun_process', None) is not None:
+            return
+        self.autorun_process = QProcess(self)
+        self.autorun_process.setWorkingDirectory(self.folder)
+        self.autorun_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self.autorun_process.readyReadStandardOutput.connect(self._on_autorun_output)
+        self.autorun_process.finished.connect(self._on_autorun_finished)
+        # Ejecutar a través de cmd.exe en Windows si está disponible
+        if shutil.which("cmd.exe"):
+            self.autorun_process.start("cmd.exe", ["/c", command])
+        else:
+            # dividir simple en tokens; si hay casos complejos, el usuario puede
+            # especificar un script file path en la configuración
+            parts = shlex.split(command)
+            if parts:
+                prog, args = parts[0], parts[1:]
+                self.autorun_process.start(prog, args)
+
+    def _on_autorun_output(self):
+        if not getattr(self, 'autourun_process', None):
+            return
+        data = bytes(self.autorun_process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        if data:
+            self.log_view.moveCursor(self.log_view.textCursor().MoveOperation.End)
+            self.log_view.insertPlainText(data)
+
+    def _on_autorun_finished(self, exit_code: int, exit_status):
+        self._append_log(f"\n--- Autorun terminó (código {exit_code}) ---\n")
+        if exit_code != 0:
+            QMessageBox.warning(self, "Autorun falló", f"El comando autorun devolvió código {exit_code}.\nRevisá la salida en la sección 'Salida'.")
+        try:
+            self.autorun_process = None
+        except Exception:
+            self.autorun_process = None
 
     def closeEvent(self, event):
         if self.process and self.process.state() != QProcess.ProcessState.NotRunning:
