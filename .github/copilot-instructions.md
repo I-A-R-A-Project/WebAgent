@@ -74,6 +74,10 @@ Collections link multiple profiles to a single workspace with optional Git versi
 
 ### Local automation scripts
 - `scripts/refactor_py_rope.py`: helper (rope-based) for Python refactorings (rename/move)
+- `scripts/refactor_js.py`: wrapper to run jscodeshift transforms (JS/TS) via npx
+- `scripts/refactor_prettier.py`: wrapper to run prettier (JS/TS/HTML/CSS)
+- `scripts/refactor_rust.py`: wrapper to run cargo fmt and cargo fix (Rust)
+- `scripts/refactor_comby.py`: wrapper to run comby structural search/replace for multiple languages
 - `scripts/toggle_autorun.py`: toggle per-folder autorun settings (edits ~/.ia_browser/codex_config.json)
 - New `autorun` config per-folder: `{ "autorun": { "enabled": false, "command": "" } }` — if enabled, the configured command runs automatically after an agent completes. The AIAgents dialog runs the command, streams its output to the "Salida" panel, and shows a warning if the autorun exits with a non-zero code.
 
