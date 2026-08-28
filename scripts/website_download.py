@@ -3,9 +3,6 @@
 
 import argparse
 from pathlib import Path
-import sys
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from website_tools.downloader import DownloadConfig, download_site
 from website_tools.storage import load_crawl

@@ -129,17 +129,17 @@ Collections link multiple profiles to a single workspace with optional Git versi
 
 ### Website tools
 
-`website_tools` contains the first phase of the planned downloader, analyzer,
+`scripts/website_tools` contains the first phase of the planned downloader, analyzer,
 and scraper system. Use `scripts/website_crawl.py` for bounded, domain-scoped
 HTML crawling and compact JSON results. Keep timeouts, page limits, domain
 restrictions, and credential isolation enabled by default.
 
-`website_tools.analyzer` provides the next phase: it analyzes saved crawl
+`scripts.website_tools.analyzer` provides the next phase: it analyzes saved crawl
 results for HTTP/request errors, duplicate or missing titles, missing meta
 descriptions/headings, and links to failed pages without downloading content
 again.
 
-`website_tools.scraper` provides CSS-selector JSON extraction for text and
+`scripts.website_tools.scraper` provides CSS-selector JSON extraction for text and
 attributes, with JSON/CSV output through `scripts/website_scrape.py`.
 
 The same flow is available in the GUI under **View -> Website Tools...**. It

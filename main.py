@@ -48,7 +48,7 @@ from web_common.video_tab import VideoTab
 from web_common import folder_viewer
 from web_common.web_profiles import build_web_profile
 from ai_manager import AIAgentsDialog
-from website_tools.dialogs import WebsiteToolsDialog
+from scripts.website_tools.dialogs import WebsiteToolsDialog
 
 
 class IABrowser(QMainWindow):

@@ -159,7 +159,7 @@ IA/
 ├── collections_manager.py  # Colecciones y marcadores multi-perfil
 ├── downloads.py            # Descargas, reemplazo y extracción
 ├── ai_manager.py           # Terminal integrada y gestión de agentes
-├── website_tools/          # Crawling y extracción web controlada
+├── scripts/website_tools/   # Crawling y extracción web controlada
 ├── web_engine.py           # Popups OAuth y vistas locales
 ├── file_ops.py             # Git, ramas y operaciones de archivos
 └── requirements.txt        # Dependencias Python

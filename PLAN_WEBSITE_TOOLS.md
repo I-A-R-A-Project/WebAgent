@@ -3,6 +3,8 @@
 ## Estado actual
 
 - Rama de trabajo: `master`.
+- El paquete se ubica en `scripts/website_tools`; los scripts `website_*.py`
+  se pueden ejecutar directamente sin modificar `sys.path`.
 - Fase 1 completada: crawler HTTP acotado, límites de dominio/profundidad/páginas,
   timeout, cancelación y exportación JSON.
 - Fase 2 completada: análisis de títulos, meta descripción, encabezados, errores
