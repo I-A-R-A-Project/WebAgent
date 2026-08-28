@@ -16,7 +16,7 @@ def main() -> int:
     parser.add_argument("crawl_json", type=Path)
     parser.add_argument("--rule", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--format", choices=("json", "csv"), default="json")
+    parser.add_argument("--format", choices=("json", "jsonl", "csv", "sqlite"), default="json")
     parser.add_argument("--insecure-tls", action="store_true")
     args = parser.parse_args()
     crawl = load_crawl(args.crawl_json)

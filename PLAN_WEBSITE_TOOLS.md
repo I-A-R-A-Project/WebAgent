@@ -14,7 +14,7 @@
   reescritura de enlaces HTML para navegación offline. La UI permite elegir
   carpeta y confirma la descarga antes de escribir.
 - Scraper MVP iniciado: reglas JSON con selectores CSS simples, extracción de
-  texto/atributos y exportación JSON/CSV.
+  texto/atributos y exportación JSON/JSONL/CSV/SQLite.
 - UI de crawl actualizada con estado en vivo de páginas procesadas y profundidad.
 - Sitio local de prueba: `http://127.0.0.1:8765/`.
 
@@ -25,6 +25,7 @@
    - [x] Resolver URLs relativas y reescribir enlaces HTML offline.
    - [ ] Usar carpeta temporal y mover resultados a la carpeta final tras confirmar.
 2. **Completar Scraper MVP**
+   - [x] Exportar JSON, JSONL, CSV y SQLite.
    - Reglas CSS/XPath en JSON/YAML.
    - Extraer texto, atributos, enlaces, imágenes y tablas.
    - Paginación y exportación CSV/JSON/JSONL/SQLite.

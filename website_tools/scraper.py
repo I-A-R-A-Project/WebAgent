@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field, asdict
 import csv
 import json
+import sqlite3
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -145,11 +146,29 @@ def save_rows(result: ScrapeResult, path: str | Path, fmt: str) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if fmt == "json":
         target.write_text(json.dumps(asdict(result), ensure_ascii=False, indent=2), encoding="utf-8")
+    elif fmt == "jsonl":
+        with target.open("w", encoding="utf-8") as handle:
+            for row in result.rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     elif fmt == "csv":
         fields = sorted({key for row in result.rows for key in row})
         with target.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
             writer.writerows(result.rows)
+    elif fmt == "sqlite":
+        fields = sorted({key for row in result.rows for key in row})
+        with sqlite3.connect(target) as connection:
+            connection.execute("DROP TABLE IF EXISTS scraped_rows")
+            if fields:
+                columns = ", ".join(f'"{field}" TEXT' for field in fields)
+                placeholders = ", ".join("?" for _ in fields)
+                connection.execute(f'CREATE TABLE scraped_rows ({columns})')
+                connection.executemany(
+                    f'INSERT INTO scraped_rows ({", ".join(f""" "{field}" """ for field in fields)}) '
+                    f"VALUES ({placeholders})",
+                    [[row.get(field, "") for field in fields] for row in result.rows],
+                )
+            connection.commit()
     else:
-        raise ValueError("Formato no soportado; usar json o csv")
+        raise ValueError("Formato no soportado; usar json, jsonl, csv o sqlite")
