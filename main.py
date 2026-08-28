@@ -41,6 +41,7 @@ from web_common.session import (
 )
 from web_common.sidebar import AppPanelOverlay, SidebarContainer, SidebarRail
 from web_common import local_viewer
+from web_common.downloader_handoff import handoff_url_to_downloader
 from web_common.tabs import VIDEO_EXTS, UnifiedWebTab, install_tab_context_menu
 from web_common.media_tabs import open_video_tab as add_video_tab
 from web_common.video_tab import VideoTab
@@ -409,6 +410,11 @@ class IABrowser(QMainWindow):
 
         # Guardar referencias
         self.address_bar = navbar.address_bar
+
+        send_action = QAction("⬇", navbar)
+        send_action.setToolTip("Enviar URL actual al Downloader")
+        send_action.triggered.connect(self.send_current_url_to_downloader)
+        navbar.addAction(send_action)
         
         # Agregar botones específicos de IA
         self.collection_action = QAction("☆", navbar)
@@ -432,6 +438,18 @@ class IABrowser(QMainWindow):
         navbar.addAction(attach_action)
 
         return navbar
+
+    def send_current_url_to_downloader(self):
+        webview = self.current_webview()
+        tab_meta = self.tab_data.get(id(webview), {}) if webview else {}
+        folder, _ = self._resolve_target_folder(tab_meta)
+        handoff_url_to_downloader(
+            webview.url().toString() if webview else "",
+            __file__,
+            path=folder,
+            title=webview.title() if webview else "",
+            status_callback=self.statusBar().showMessage,
+        )
 
     # ------------------------------------------------------------------
     # Tabs
