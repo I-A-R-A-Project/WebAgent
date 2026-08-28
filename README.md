@@ -176,6 +176,17 @@ python scripts/website_crawl.py https://example.com --output crawl.json --max-de
 Por defecto limita profundidad y cantidad de páginas, sigue solo enlaces
 HTTP/HTTPS del dominio permitido y exporta resultados compactos en JSON.
 
+El informe técnico se genera en una segunda etapa, sin volver a descargar el
+sitio:
+
+```bash
+python scripts/website_analyze.py crawl.json --output report.json
+```
+
+Detecta errores HTTP, errores de solicitud, títulos ausentes o duplicados,
+meta descripciones ausentes, páginas sin encabezados y enlaces hacia páginas
+con error.
+
 ## Datos persistentes
 
 IA Browser guarda datos en `~/.ia_browser/`:
