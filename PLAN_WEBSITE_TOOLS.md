@@ -20,6 +20,9 @@
 - Workers concurrentes configurables para el crawler, limitados por CPU y a 16.
 - El crawler respeta `robots.txt` por defecto y permite omitirlo explícitamente
   solo para entornos controlados.
+- Pruebas externas realizadas con Books to Scrape, Quotes to Scrape,
+  Scrapethissite y JSONPlaceholder: crawl, análisis, scraping y descarga
+  acotada respondieron correctamente.
 
 ## Próximas fases
 

@@ -214,6 +214,10 @@ python scripts/website_download.py crawl.json --output sitio-descargado --max-pa
 El Scraper MVP acepta una regla JSON con selector de elementos y campos de
 texto o atributos, y puede exportar JSON, JSONL, CSV o SQLite.
 
+La implementación se probó con sitios de práctica públicos como Books to
+Scrape, Quotes to Scrape y Scrapethissite, usando límites pequeños y
+respetando `robots.txt`.
+
 También podés abrir **Vista → Website Tools...** desde la interfaz. El diálogo
 precompleta la URL de la pestaña actual, permite elegir el tipo de operación,
 limitar profundidad y páginas, muestra el informe dentro de IA Browser y
