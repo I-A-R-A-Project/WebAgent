@@ -38,6 +38,7 @@ class WebsiteToolsDialog(QDialog):
         self.thread = None
         self.worker = None
         self.last_result: CrawlResult | None = None
+        self.pages_processed = 0
         self._build_ui(initial_url)
 
     def _build_ui(self, initial_url):
@@ -58,6 +59,13 @@ class WebsiteToolsDialog(QDialog):
         self.pages_spin.setRange(1, 10000)
         self.pages_spin.setValue(25)
         form.addRow("Máximo de páginas:", self.pages_spin)
+        self.pages_status = QLabel("Páginas: 0 / 0")
+        self.depth_status = QLabel("Profundidad: - / 0")
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.pages_status)
+        status_row.addWidget(self.depth_status)
+        status_row.addStretch()
+        layout.addLayout(status_row)
         self.insecure_tls = QCheckBox("Omitir verificación TLS (solo sitios de prueba)")
         self.insecure_tls.setToolTip("No usar en sitios con credenciales o datos sensibles.")
         form.addRow("", self.insecure_tls)
@@ -91,6 +99,9 @@ class WebsiteToolsDialog(QDialog):
             return
         self.run_btn.setEnabled(False)
         self.output.setPlainText("Crawleando...")
+        self.pages_processed = 0
+        self.pages_status.setText(f"Páginas: 0 / {self.pages_spin.value()}")
+        self.depth_status.setText(f"Profundidad: - / {self.depth_spin.value()}")
         config = CrawlConfig(
             start_url=url,
             max_depth=self.depth_spin.value(),
@@ -113,6 +124,9 @@ class WebsiteToolsDialog(QDialog):
         status = str(page.status) if page.status is not None else "error"
         title = f" — {page.title}" if page.title else ""
         self.output.append(f"[{status}] {page.url}{title}")
+        self.pages_processed += 1
+        self.pages_status.setText(f"Páginas: {self.pages_processed} / {self.pages_spin.value()}")
+        self.depth_status.setText(f"Profundidad: {page.depth} / {self.depth_spin.value()}")
 
     def _on_finished(self, result):
         self.last_result = result
@@ -123,6 +137,10 @@ class WebsiteToolsDialog(QDialog):
             f"Hallazgos: {len(report.findings)}\n\n"
             f"{self._format_report(report)}"
         )
+        self.pages_status.setText(f"Páginas: {result.visited} / {self.pages_spin.value()}")
+        max_depth = self.depth_spin.value()
+        current_depth = max((page.depth for page in result.pages), default=0)
+        self.depth_status.setText(f"Profundidad: {current_depth} / {max_depth}")
         self.run_btn.setEnabled(True)
         self.save_btn.setEnabled(True)
 

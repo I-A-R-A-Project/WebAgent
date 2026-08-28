@@ -5,6 +5,8 @@ from hashlib import sha256
 import json
 from pathlib import Path
 from urllib.parse import urlsplit
+from urllib.parse import urljoin
+from html.parser import HTMLParser
 from urllib.request import Request, urlopen
 import ssl
 
@@ -37,6 +39,23 @@ class DownloadResult:
     total_bytes: int = 0
 
 
+class _ResourceParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.urls: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        if tag.lower() == "img" and values.get("src"):
+            self.urls.append(values["src"])
+        elif tag.lower() == "script" and values.get("src"):
+            self.urls.append(values["src"])
+        elif tag.lower() == "link" and values.get("href"):
+            relation = values.get("rel", "").lower()
+            if any(item in relation for item in ("stylesheet", "icon", "manifest")):
+                self.urls.append(values["href"])
+
+
 def _safe_path(url: str, output_dir: Path) -> Path:
     parts = urlsplit(url)
     relative = (parts.path or "/").lstrip("/")
@@ -50,11 +69,17 @@ def _safe_path(url: str, output_dir: Path) -> Path:
     return candidate
 
 
-def download_site(config: DownloadConfig, urls: list[str]) -> DownloadResult:
+def download_site(config: DownloadConfig, urls: list[str], *, include_resources: bool = True) -> DownloadResult:
     result = DownloadResult()
     context = ssl.create_default_context() if config.verify_tls else ssl._create_unverified_context()
     config.output_dir.mkdir(parents=True, exist_ok=True)
-    for url in urls[:config.max_pages]:
+    queue = list(dict.fromkeys(urls[:config.max_pages]))
+    seen = set()
+    while queue and len(seen) < config.max_pages:
+        url = queue.pop(0)
+        if url in seen:
+            continue
+        seen.add(url)
         entry = DownloadEntry(url=url)
         try:
             request = Request(url, headers={"User-Agent": config.user_agent})
@@ -74,6 +99,14 @@ def download_site(config: DownloadConfig, urls: list[str]) -> DownloadResult:
             entry.bytes = len(raw)
             entry.sha256 = sha256(raw).hexdigest()
             result.total_bytes += len(raw)
+            if include_resources and entry.content_type == "text/html":
+                parser = _ResourceParser()
+                parser.feed(raw.decode("utf-8", errors="replace"))
+                base = url
+                for resource in parser.urls:
+                    child = urljoin(base, resource)
+                    if urlsplit(child).scheme in {"http", "https"} and child not in seen:
+                        queue.append(child)
         except (OSError, ValueError) as exc:
             entry.error = str(exc)
         result.entries.append(entry)

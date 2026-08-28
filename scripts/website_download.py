@@ -18,6 +18,7 @@ def main() -> int:
     parser.add_argument("--max-pages", type=int, default=25)
     parser.add_argument("--max-bytes", type=int, default=50_000_000)
     parser.add_argument("--insecure-tls", action="store_true")
+    parser.add_argument("--no-resources", action="store_true", help="No descargar CSS, JS, imágenes ni manifest enlazados")
     args = parser.parse_args()
     if args.max_pages < 1 or args.max_bytes < 1:
         parser.error("Los límites deben ser mayores que cero.")
@@ -31,6 +32,7 @@ def main() -> int:
             verify_tls=not args.insecure_tls,
         ),
         [page.url for page in crawl.pages],
+        include_resources=not args.no_resources,
     )
     print(f"Archivos procesados: {len(result.entries)}")
     print(f"Bytes descargados: {result.total_bytes}")
