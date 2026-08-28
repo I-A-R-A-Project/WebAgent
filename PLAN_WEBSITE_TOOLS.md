@@ -26,7 +26,7 @@
 1. **Completar Downloader MVP**
    - [x] Integrar carpeta destino y confirmación desde la UI.
    - [x] Resolver URLs relativas y reescribir enlaces HTML offline.
-   - [ ] Usar carpeta temporal y mover resultados a la carpeta final tras confirmar.
+   - [x] Usar carpeta temporal y mover resultados a la carpeta final tras confirmar.
 2. **Completar Scraper MVP**
    - [x] Exportar JSON, JSONL, CSV y SQLite.
    - Reglas CSS/XPath en JSON/YAML.
