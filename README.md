@@ -187,6 +187,13 @@ Detecta errores HTTP, errores de solicitud, títulos ausentes o duplicados,
 meta descripciones ausentes, páginas sin encabezados y enlaces hacia páginas
 con error.
 
+El Downloader MVP descarga las páginas de un crawl en una carpeta controlada y
+genera `website-manifest.json` con estado, tamaño y SHA-256:
+
+```bash
+python scripts/website_download.py crawl.json --output sitio-descargado --max-pages 25
+```
+
 Para probarlo sin depender de Internet, iniciá el sitio interno:
 
 ```bash

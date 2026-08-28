@@ -9,14 +9,16 @@
   HTTP y enlaces hacia páginas fallidas.
 - UI inicial completada: **Vista → Website Tools...**, URL precompletada desde la
   pestaña actual, ejecución en worker y guardado del crawl.
+- Downloader MVP iniciado: descarga de páginas de un crawl, límites de bytes,
+  rutas seguras, hashes y manifest JSON.
 - Sitio local de prueba: `http://127.0.0.1:8765/`.
 
 ## Próximas fases
 
-1. **Downloader MVP**
-   - Descargar HTML y recursos seleccionados.
+1. **Completar Downloader MVP**
+   - Descargar recursos CSS, JavaScript e imágenes seleccionados.
    - Resolver URLs relativas y reescribir enlaces offline.
-   - Manifest, hashes, límites de bytes y carpeta temporal.
+   - Integrar carpeta temporal y confirmación desde la UI.
    - Confirmación antes de mover resultados a la carpeta final.
 2. **Scraper MVP**
    - Reglas CSS/XPath en JSON/YAML.

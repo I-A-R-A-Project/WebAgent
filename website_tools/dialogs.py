@@ -15,6 +15,7 @@ from .crawler import CrawlConfig, CrawlResult, crawl
 class _CrawlWorker(QObject):
     finished = pyqtSignal(object)
     failed = pyqtSignal(str)
+    progress = pyqtSignal(object)
 
     def __init__(self, config: CrawlConfig):
         super().__init__()
@@ -22,7 +23,7 @@ class _CrawlWorker(QObject):
 
     def run(self):
         try:
-            self.finished.emit(crawl(self.config))
+            self.finished.emit(crawl(self.config, on_page=self.progress.emit))
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -100,12 +101,18 @@ class WebsiteToolsDialog(QDialog):
         self.worker = _CrawlWorker(config)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(self._on_progress)
         self.worker.finished.connect(self._on_finished)
         self.worker.failed.connect(self._on_failed)
         self.worker.finished.connect(self.thread.quit)
         self.worker.failed.connect(self.thread.quit)
         self.thread.finished.connect(self._clear_worker)
         self.thread.start()
+
+    def _on_progress(self, page):
+        status = str(page.status) if page.status is not None else "error"
+        title = f" — {page.title}" if page.title else ""
+        self.output.append(f"[{status}] {page.url}{title}")
 
     def _on_finished(self, result):
         self.last_result = result
