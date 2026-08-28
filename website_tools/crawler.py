@@ -1,6 +1,7 @@
 """Crawler HTTP pequeño y controlado para la Fase 1 de Website Tools."""
 
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from html.parser import HTMLParser
 from typing import Callable
 from urllib.error import HTTPError, URLError
@@ -20,6 +21,10 @@ class CrawlConfig:
     delay: float = 0.0
     user_agent: str = "IA-Browser-WebsiteTools/1.0"
     verify_tls: bool = True
+    allowed_url_patterns: list[str] = field(default_factory=list)
+    blocked_url_patterns: list[str] = field(default_factory=list)
+    allowed_content_selectors: list[str] = field(default_factory=list)
+    blocked_content_selectors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -43,8 +48,13 @@ class CrawlResult:
 
 
 class _LinkParser(HTMLParser):
-    def __init__(self):
+    def __init__(self, allowed_selectors=None, blocked_selectors=None):
         super().__init__()
+        self.allowed_selectors = allowed_selectors or []
+        self.blocked_selectors = blocked_selectors or []
+        self.scope_stack: list[bool] = [not self.allowed_selectors]
+        self.blocked_stack: list[bool] = [False]
+        self.blocked_depth = 0
         self.links: list[str] = []
         self.title_parts: list[str] = []
         self.description = ""
@@ -54,13 +64,21 @@ class _LinkParser(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attrs_dict = dict(attrs)
+        matches_allowed = any(_matches_selector(tag, attrs_dict, selector) for selector in self.allowed_selectors)
+        matches_blocked = any(_matches_selector(tag, attrs_dict, selector) for selector in self.blocked_selectors)
+        self.scope_stack.append(self.scope_stack[-1] or matches_allowed)
+        self.blocked_stack.append(matches_blocked)
+        if matches_blocked:
+            self.blocked_depth += 1
+        in_scope = self.scope_stack[-1] and not self.blocked_depth
         if tag.lower() == "a" and attrs_dict.get("href"):
-            self.links.append(attrs_dict["href"])
+            if in_scope:
+                self.links.append(attrs_dict["href"])
         if tag.lower() == "title":
             self.in_title = True
-        if tag.lower() in {"h1", "h2", "h3"}:
+        if in_scope and tag.lower() in {"h1", "h2", "h3"}:
             self.current_heading = []
-        if tag.lower() == "meta":
+        if in_scope and tag.lower() == "meta":
             name = attrs_dict.get("name", "").lower()
             if name == "description":
                 self.description = attrs_dict.get("content", "").strip()
@@ -73,12 +91,44 @@ class _LinkParser(HTMLParser):
             if heading:
                 self.headings.append(heading)
             self.current_heading = None
+        if len(self.scope_stack) > 1:
+            self.scope_stack.pop()
+        if self.blocked_stack.pop() and self.blocked_depth:
+            self.blocked_depth -= 1
 
     def handle_data(self, data):
         if self.in_title:
             self.title_parts.append(data)
         if self.current_heading is not None:
             self.current_heading.append(data)
+
+
+def _matches_selector(tag: str, attrs: dict[str, str], selector: str) -> bool:
+    """Coincide selectores simples: tag, #id, .clase y [atributo[=valor]]."""
+    selector = selector.strip()
+    if not selector or any(char in selector for char in " >+~"):
+        return False
+    attribute = ""
+    if "[" in selector and selector.endswith("]"):
+        selector, attribute = selector[:-1].split("[", 1)
+    element_id = ""
+    classes = []
+    if "#" in selector:
+        selector, element_id = selector.split("#", 1)
+    if "." in selector:
+        selector, *classes = selector.split(".")
+    if selector and selector != "*" and selector.lower() != tag.lower():
+        return False
+    if element_id and attrs.get("id") != element_id:
+        return False
+    if classes and not set(classes).issubset(set(attrs.get("class", "").split())):
+        return False
+    if attribute:
+        name, _, value = attribute.partition("=")
+        value = value.strip("\"'")
+        if name not in attrs or (value and attrs[name] != value):
+            return False
+    return True
 
 
 def _normalize_url(url: str) -> str:
@@ -93,6 +143,12 @@ def _is_allowed(url: str, domain: str) -> bool:
     return host == allowed or host.endswith("." + allowed)
 
 
+def _matches_url_patterns(url: str, allowed: list[str], blocked: list[str]) -> bool:
+    if blocked and any(fnmatch(url, pattern) for pattern in blocked):
+        return False
+    return not allowed or any(fnmatch(url, pattern) for pattern in allowed)
+
+
 def crawl(
     config: CrawlConfig,
     *,
@@ -101,6 +157,11 @@ def crawl(
 ) -> CrawlResult:
     """Crawl HTML links while enforcing domain, depth and page limits."""
     start = _normalize_url(config.start_url)
+    if not _matches_url_patterns(start, config.allowed_url_patterns, config.blocked_url_patterns):
+        return CrawlResult(
+            pages=[PageResult(url=start, depth=0, error="URL inicial fuera de whitelist/blacklist")],
+            visited=1,
+        )
     start_domain = config.allowed_domain or (urlsplit(start).hostname or "")
     queue: list[tuple[str, int]] = [(start, 0)]
     queued = {start}
@@ -120,7 +181,7 @@ def crawl(
                 page.content_type = response.headers.get_content_type()
                 raw = response.read(2_000_000)
             if page.content_type == "text/html":
-                parser = _LinkParser()
+                parser = _LinkParser(config.allowed_content_selectors, config.blocked_content_selectors)
                 parser.feed(raw.decode("utf-8", errors="replace"))
                 page.title = " ".join("".join(parser.title_parts).split())
                 page.description = parser.description
@@ -132,7 +193,15 @@ def crawl(
                 ]
                 if depth < config.max_depth:
                     for child in page.links:
-                        if urlsplit(child).scheme in {"http", "https"} and _is_allowed(child, start_domain):
+                        if (
+                            urlsplit(child).scheme in {"http", "https"}
+                            and _is_allowed(child, start_domain)
+                            and _matches_url_patterns(
+                                child,
+                                config.allowed_url_patterns,
+                                config.blocked_url_patterns,
+                            )
+                        ):
                             if child not in queued:
                                 queued.add(child)
                                 queue.append((child, depth + 1))

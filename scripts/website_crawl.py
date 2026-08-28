@@ -19,6 +19,10 @@ def main() -> int:
     parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-pages", type=int, default=100)
     parser.add_argument("--delay", type=float, default=0.0)
+    parser.add_argument("--allow-url", action="append", default=[], help="Patrón URL whitelist; repetir para varios")
+    parser.add_argument("--block-url", action="append", default=[], help="Patrón URL blacklist; repetir para varios")
+    parser.add_argument("--allow-selector", action="append", default=[], help="Selector CSS cuyo contenido se procesa")
+    parser.add_argument("--block-selector", action="append", default=[], help="Selector CSS cuyo contenido se ignora")
     args = parser.parse_args()
     if args.max_depth < 0 or args.max_pages < 1 or args.delay < 0:
         parser.error("Los límites deben ser positivos; max-depth puede ser cero.")
@@ -28,6 +32,10 @@ def main() -> int:
         max_depth=args.max_depth,
         max_pages=args.max_pages,
         delay=args.delay,
+        allowed_url_patterns=args.allow_url,
+        blocked_url_patterns=args.block_url,
+        allowed_content_selectors=args.allow_selector,
+        blocked_content_selectors=args.block_selector,
     ))
     save_crawl(result, args.output)
     print(f"Páginas visitadas: {result.visited}")

@@ -80,6 +80,18 @@ class WebsiteToolsDialog(QDialog):
         self.pages_spin.setRange(1, 10000)
         self.pages_spin.setValue(25)
         form.addRow("Máximo de páginas:", self.pages_spin)
+        self.allow_urls_edit = QLineEdit()
+        self.allow_urls_edit.setPlaceholderText("https://scp-wiki.wikidot.com/*")
+        form.addRow("Whitelist URLs:", self.allow_urls_edit)
+        self.block_urls_edit = QLineEdit()
+        self.block_urls_edit.setPlaceholderText("Separar patrones con comas")
+        form.addRow("Blacklist URLs:", self.block_urls_edit)
+        self.allow_selectors_edit = QLineEdit()
+        self.allow_selectors_edit.setPlaceholderText("#main-content")
+        form.addRow("Whitelist contenido:", self.allow_selectors_edit)
+        self.block_selectors_edit = QLineEdit()
+        self.block_selectors_edit.setPlaceholderText(".ads, footer")
+        form.addRow("Blacklist contenido:", self.block_selectors_edit)
         output_row = QHBoxLayout()
         self.output_dir_edit = QLineEdit()
         self.output_dir_edit.setPlaceholderText("Carpeta destino para descargar")
@@ -139,6 +151,10 @@ class WebsiteToolsDialog(QDialog):
             max_depth=self.depth_spin.value(),
             max_pages=self.pages_spin.value(),
             verify_tls=not self.insecure_tls.isChecked(),
+            allowed_url_patterns=self._split_patterns(self.allow_urls_edit.text()),
+            blocked_url_patterns=self._split_patterns(self.block_urls_edit.text()),
+            allowed_content_selectors=self._split_patterns(self.allow_selectors_edit.text()),
+            blocked_content_selectors=self._split_patterns(self.block_selectors_edit.text()),
         )
         self.thread = QThread(self)
         self.worker = _CrawlWorker(config)
@@ -151,6 +167,10 @@ class WebsiteToolsDialog(QDialog):
         self.worker.failed.connect(self.thread.quit)
         self.thread.finished.connect(self._clear_worker)
         self.thread.start()
+
+    @staticmethod
+    def _split_patterns(value):
+        return [part.strip() for part in value.split(",") if part.strip()]
 
     def _choose_output_dir(self):
         from PyQt6.QtWidgets import QFileDialog

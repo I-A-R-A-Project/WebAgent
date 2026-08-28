@@ -16,6 +16,7 @@
 - Scraper MVP iniciado: reglas JSON con selectores CSS simples, extracción de
   texto/atributos y exportación JSON/JSONL/CSV/SQLite.
 - UI de crawl actualizada con estado en vivo de páginas procesadas y profundidad.
+- Whitelist/blacklist de URLs y de contenido HTML integrada en crawler, CLI y UI.
 - Sitio local de prueba: `http://127.0.0.1:8765/`.
 
 ## Próximas fases
@@ -43,6 +44,8 @@
 
 - Restringir dominio por defecto y bloquear localhost/redes privadas en trabajos
   remotos.
+- Permitir listas explícitas de URL y selectores de contenido para limitar el
+  alcance del trabajo.
 - Mantener límites de páginas, bytes, redirecciones, concurrencia y timeout.
 - Respetar `robots.txt` por defecto.
 - No reutilizar cookies o credenciales del perfil sin autorización explícita.

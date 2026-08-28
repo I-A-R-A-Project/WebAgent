@@ -175,6 +175,21 @@ python scripts/website_crawl.py https://example.com --output crawl.json --max-de
 
 Por defecto limita profundidad y cantidad de páginas, sigue solo enlaces
 HTTP/HTTPS del dominio permitido y exporta resultados compactos en JSON.
+Se puede restringir explícitamente el alcance con patrones URL y selectores
+HTML. Por ejemplo, para limitarse al SCP Wiki y solo procesar su contenido
+principal:
+
+```bash
+python scripts/website_crawl.py https://scp-wiki.wikidot.com/ \
+  --output scp-crawl.json --allow-url "https://scp-wiki.wikidot.com/*" \
+  --allow-selector "#main-content" --block-selector ".ads,footer"
+```
+
+`--allow-url` y `--block-url` aceptan patrones glob y pueden repetirse.
+`--allow-selector` limita enlaces, títulos, metadatos y encabezados a los
+elementos seleccionados; `--block-selector` excluye esos elementos y sus
+descendientes. Los selectores soportados son `tag`, `#id`, `.clase` y
+`[atributo=valor]`.
 
 El informe técnico se genera en una segunda etapa, sin volver a descargar el
 sitio:
