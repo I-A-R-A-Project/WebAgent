@@ -9,7 +9,8 @@ def render_new_tab_page(tasks=None) -> str:
     rows = "".join(
         f"<li><strong>{html.escape(item['text'])}</strong> "
         f"<small>{html.escape(item.get('status', 'pending'))}"
-        f"{' · ' + html.escape(item['collection_name']) if item.get('collection_name') else ''}</small></li>"
+        f"{' · ' + html.escape(item['collection_name']) if item.get('collection_name') else ''}"
+        f" · <a href='ia://copilot?task={item['id']}'>Enviar a Copilot</a></small></li>"
         for item in tasks[-20:]
     ) or "<li class='empty'>Todavía no hay tareas.</li>"
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>Nueva pestaña</title>

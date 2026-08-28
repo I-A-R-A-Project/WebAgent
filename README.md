@@ -167,6 +167,12 @@ IA/
 └── requirements.txt        # Dependencias Python
 ```
 
+Cada pestaña nueva incluye búsqueda de Google y una bandeja local de tareas.
+Las tareas se guardan por perfil; si existe `ANYAPI_API_KEY`, AnyAPI intenta
+asociarlas con una Colección y cada tarea ofrece un enlace explícito para
+abrirla en Copilot. Las tareas sin coincidencia preguntan antes de crear una
+Colección nueva.
+
 ### Website Tools
 
 La primera fase incluye un crawler HTTP acotado y reutilizable:

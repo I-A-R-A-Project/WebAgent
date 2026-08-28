@@ -511,6 +511,26 @@ class IABrowser(QMainWindow):
             self.tabs.tabBar().moveTab(plus_index, last)
 
     def _on_tab_url_changed(self, webview, url: QUrl):
+        if url.scheme() == "ia" and url.host() == "copilot":
+            task_id = parse_qs(url.query()).get("task", [""])[0]
+            profile_id = self.tab_data.get(id(webview), {}).get("profile_id", self.current_profile_id)
+            task = next((item for item in TaskManager(profile_id).tasks if item["id"] == task_id), None)
+            profile = self.profile_manager.get_profile(profile_id)
+            if task and profile:
+                dialog = AIAgentsDialog(
+                    self,
+                    profile.get("files_dir", str(Path.home())),
+                    profile_id=profile_id,
+                    profile_ids=[item["id"] for item in self.profile_manager.profiles],
+                    profile_names={item["id"]: item["name"] for item in self.profile_manager.profiles},
+                    auth_url_handler=self._open_copilot_auth_url,
+                )
+                if dialog.agent_widgets.get("copilot", {}).get("task_edit"):
+                    dialog.agent_widgets["copilot"]["task_edit"].setPlainText(task["text"])
+                dialog.show()
+                self._agent_dialogs = getattr(self, "_agent_dialogs", [])
+                self._agent_dialogs.append(dialog)
+            return
         if url.scheme() == "ia" and url.host() == "task":
             text = parse_qs(url.query(), keep_blank_values=True).get("text", [""])[0]
             profile_id = self.tab_data.get(id(webview), {}).get("profile_id", self.current_profile_id)
