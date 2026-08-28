@@ -11,11 +11,10 @@ Colección), desde un diálogo con pestañas:
     "limpia" de destino.
   - Codex: revisa/reescribe el historial de la rama cruda y arma
     commits prolijos y descriptivos en la rama limpia.
-  - Copilot: solo lee código para entender el proyecto, pero
-    únicamente crea o modifica documentación (README, AGENTS.md, .txt,
-    etc) — nunca código fuente.
-Cada agente tiene su propio comando (editable) y su propio prompt
-(generado desde una plantilla, también editable antes de correr).
+  - Copilot: agente principal capaz de leer y modificar código y
+    documentación, además de ejecutar verificaciones del proyecto.
+Cada agente tiene su propio comando configurable; las tareas y la salida
+se gestionan en la consola inferior de la ventana principal.
 """
 
 import json
@@ -212,15 +211,19 @@ class AgentConfigStore:
         self.data[str(folder)] = entry
         self.save()
 
+    def set_autorun(self, folder: str, enabled: bool, command: str):
+        entry = self.get(folder)
+        entry["autorun"] = {"enabled": bool(enabled), "command": command}
+        self.data[str(folder)] = entry
+        self.save()
+
 
 # ======================================================================
 # Diálogo principal
 # ======================================================================
 
 class AIAgentsDialog(QDialog):
-    """Diálogo de gestión: conectar repo remoto, configurar ramas
-    cruda/limpia, y disparar cada uno de los 3 agentes (Codex, Copilot,
-    Gemini) por separado sobre la misma carpeta."""
+    """Diálogo no modal para configurar agentes y el repositorio del perfil."""
 
     def __init__(self, parent, folder: str, profile_id: str | None = None,
                  profile_ids: list[str] | None = None, profile_names: dict[str, str] | None = None,
@@ -259,24 +262,13 @@ class AIAgentsDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"📁 {folder}"))
-        profile_row = QHBoxLayout()
-        profile_row.addWidget(QLabel("Cuenta Copilot / perfil:"))
-        self.copilot_profile_combo = QComboBox()
-        for item in self.profile_ids:
-            self.copilot_profile_combo.addItem(self.profile_names.get(item, item), item)
-        current_index = self.copilot_profile_combo.findData(self.profile_id)
-        if current_index >= 0:
-            self.copilot_profile_combo.setCurrentIndex(current_index)
-        self.copilot_profile_combo.currentIndexChanged.connect(self._select_copilot_profile)
-        profile_row.addWidget(self.copilot_profile_combo, 1)
-        layout.addLayout(profile_row)
-
         self.agents_tabs = QTabWidget()
 
         config_tab = QWidget()
         config_layout = QVBoxLayout(config_tab)
         self._build_repo_section(config_layout)
         self._build_branches_section(config_layout)
+        self._build_autorun_section(config_layout)
         config_layout.addStretch()
         self.agents_tabs.addTab(config_tab, "⚙ Config")
 
@@ -285,14 +277,6 @@ class AIAgentsDialog(QDialog):
             self._build_agent_tab(tab, agent_id)
             self.agents_tabs.addTab(tab, AGENT_DEFS[agent_id]["short_label"])
         layout.addWidget(self.agents_tabs, 1)
- 
-        self._build_log_section(layout)
- 
-        # Merge preview button (hidden until a preview run produces commits)
-        self.preview_merge_btn = QPushButton("🔀 Aplicar preview a rama destino (merge)")
-        self.preview_merge_btn.setVisible(False)
-        self.preview_merge_btn.clicked.connect(self._merge_preview_into_target)
-        layout.addWidget(self.preview_merge_btn)
  
         close_btn = QPushButton("Cerrar")
         close_btn.clicked.connect(self.reject)
@@ -465,7 +449,7 @@ class AIAgentsDialog(QDialog):
         self.target_branch_edit.setPlaceholderText("Rama limpia (donde trabajan los 3 agentes)")
         form.addRow("Rama limpia (destino):", self.target_branch_edit)
 
-        save_branches_btn = QPushButton("Guardar ramas y regenerar prompts")
+        save_branches_btn = QPushButton("Guardar ramas")
         save_branches_btn.clicked.connect(self._save_branches)
         form.addRow("", save_branches_btn)
 
@@ -475,9 +459,26 @@ class AIAgentsDialog(QDialog):
         source = self.source_branch_edit.text().strip() or self.raw_branch
         target = self.target_branch_edit.text().strip() or self.profile_branch
         self.config_store.set_branches(self.folder, source, target)
-        for agent_id in AGENT_ORDER:
-            self._regenerate_prompt(agent_id)
-        self._append_log("ℹ Ramas guardadas y prompts regenerados")
+
+    def _build_autorun_section(self, layout):
+        box = QGroupBox("Autorun al terminar un agente")
+        form = QFormLayout(box)
+        cfg = self.config_store.get(self.folder)
+        autorun = cfg.get("autorun", {})
+        enabled = QCheckBox("Ejecutar automáticamente")
+        enabled.setChecked(bool(autorun.get("enabled")))
+        command = QLineEdit(autorun.get("command", ""))
+        command.setPlaceholderText("Ej: python -m pytest -q")
+        save = QPushButton("Guardar autorun")
+        save.clicked.connect(
+            lambda: self.config_store.set_autorun(
+                self.folder, enabled.isChecked(), command.text().strip()
+            )
+        )
+        form.addRow(enabled)
+        form.addRow("Comando:", command)
+        form.addRow("", save)
+        layout.addWidget(box)
 
     # ---------- Sección: un agente ----------
 
@@ -502,37 +503,18 @@ class AIAgentsDialog(QDialog):
         form = QFormLayout()
         command_edit = QLineEdit(agent_cfg.get("command", defn["default_command"]))
         form.addRow("Comando:", command_edit)
+        save_command_btn = QPushButton("Guardar comando")
+        save_command_btn.clicked.connect(
+            lambda: self.config_store.set_agent_field(
+                self.folder,
+                agent_id,
+                command=command_edit.text().strip() or defn["default_command"],
+            )
+        )
+        form.addRow("", save_command_btn)
         tab_layout.addLayout(form)
 
-        task_edit = None
-        if defn["needs_task"]:
-            tab_layout.addWidget(QLabel("Descripción de la tarea a implementar:"))
-            task_edit = QTextEdit()
-            task_edit.setPlainText(agent_cfg.get("last_task", ""))
-            task_edit.setPlaceholderText("Ej: Agregar un botón para exportar la lista a CSV...")
-            task_edit.setMinimumHeight(60)
-            tab_layout.addWidget(task_edit)
-
-        tab_layout.addWidget(QLabel("Prompt final (editable antes de correr):"))
-        prompt_edit = QTextEdit()
-        prompt_edit.setMinimumHeight(120)
-        tab_layout.addWidget(prompt_edit, 1)
-
         btn_row = QHBoxLayout()
-        # For Copilot, do not show a regenerate-from-template button; prompt should be left empty by default
-        if agent_id != "copilot":
-            regen_btn = QPushButton("🔄 Regenerar desde plantilla")
-        else:
-            regen_btn = None
-        run_btn = QPushButton(f"▶ Ejecutar {defn['short_label']}")
-        preview_btn = QPushButton(f"👁️ Previsualizar {defn['short_label']}")
-        stop_btn = QPushButton("⏹ Detener")
-        stop_btn.setEnabled(False)
-        if regen_btn is not None:
-            btn_row.addWidget(regen_btn)
-        btn_row.addWidget(run_btn)
-        btn_row.addWidget(preview_btn)
-        btn_row.addWidget(stop_btn)
 
         if agent_id in ("copilot", "anyapi"):
             token_edit = QLineEdit(agent_cfg.get("auth_token", ""))
@@ -546,9 +528,6 @@ class AIAgentsDialog(QDialog):
                 add_template_btn = QPushButton("➕ Agregar plantilla a copilot-instructions.md")
                 add_template_btn.clicked.connect(lambda: self._add_template_to_instructions())
                 btn_row.addWidget(add_template_btn)
-                login_btn = QPushButton("🔐 Iniciar sesión en este perfil")
-                login_btn.clicked.connect(self._start_copilot_login)
-                btn_row.addWidget(login_btn)
             else:
                 save_key_btn = QPushButton("Guardar API key")
                 save_key_btn.clicked.connect(lambda: self.config_store.set_agent_field(
@@ -557,26 +536,12 @@ class AIAgentsDialog(QDialog):
                 btn_row.addWidget(save_key_btn)
         tab_layout.addLayout(btn_row)
 
-        self.agent_widgets[agent_id] = {
-            "command_edit": command_edit, "task_edit": task_edit, "prompt_edit": prompt_edit,
-            "run_btn": run_btn, "stop_btn": stop_btn,
-        }
+        self.agent_widgets[agent_id] = {"command_edit": command_edit}
         if agent_id in ("copilot", "anyapi"):
             self.agent_widgets[agent_id]["token_edit"] = token_edit
 
-        # store copilot-specific widgets
         if agent_id == "copilot":
             self.agent_widgets[agent_id]["add_template_btn"] = add_template_btn
-
-        if regen_btn is not None:
-            regen_btn.clicked.connect(lambda: self._regenerate_prompt(agent_id))
-        run_btn.clicked.connect(lambda: self._run_agent(agent_id))
-        stop_btn.clicked.connect(self._stop_current_agent)
-
-        # connect preview button
-        preview_btn.clicked.connect(lambda: self._run_agent(agent_id, preview=True))
-
-        self._regenerate_prompt(agent_id)
 
     def _regenerate_prompt(self, agent_id: str):
         """Regenerate the prompt from template for agents that use templates.
@@ -586,18 +551,7 @@ class AIAgentsDialog(QDialog):
             # Intentionally leave Copilot prompt empty and do not auto-fill from template
             return
 
-        defn = AGENT_DEFS[agent_id]
-        cfg = self.config_store.get(self.folder)
-        widgets = self.agent_widgets[agent_id]
-
-        if defn["needs_task"]:
-            task = widgets["task_edit"].toPlainText().strip() or "(completá la descripción de la tarea arriba)"
-            prompt = defn["prompt_template"].format(target_branch=cfg["target_branch"], task=task)
-        else:
-            prompt = defn["prompt_template"].format(
-                source_branch=cfg["source_branch"], target_branch=cfg["target_branch"]
-            )
-        widgets["prompt_edit"].setPlainText(prompt)
+        return
 
     # ---------- Sección: log de ejecución (compartido entre agentes) ----------
 

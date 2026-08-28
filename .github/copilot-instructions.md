@@ -85,10 +85,10 @@ Collections link multiple profiles to a single workspace with optional Git versi
 - `scripts/website_analyze.py`: compact technical report from crawl JSON
 - `scripts/website_scrape.py`: extract structured rows from crawl URLs
 - `scripts/toggle_autorun.py`: toggle per-folder autorun settings (edits ~/.ia_browser/codex_config.json)
-- New `autorun` config per-folder: `{ "autorun": { "enabled": false, "command": "" } }` — if enabled, the configured command runs automatically after an agent completes. The AIAgents dialog runs the command, streams its output to the "Salida" panel, and shows a warning if the autorun exits with a non-zero code.
+- New `autorun` config per-folder: `{ "autorun": { "enabled": false, "command": "" } }` — if enabled, the configured command runs automatically after an agent completes. The main window's agent console runs it, streams output to the execution tab, and warns if it exits with a non-zero code.
 
 ### Adding Agent Functionality
-- Edit `ai_manager.py` to modify agent prompts or commands
+- Edit `ai_manager.py` to modify agent commands and configuration; execution and live output belong in `agent_console.py`.
 - Prompts are templates with `{target_branch}` and `{source_branch}` placeholders
 - Both agents check GitVersioning availability before running
 - Agents require a repo initialized in the target folder

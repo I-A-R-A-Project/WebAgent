@@ -65,7 +65,9 @@ Si una URL no tiene perfil asignado, se abre con `Default`. La asignación por
 URL permite abrir cada página con las cookies y la cuenta correctas sin
 cambiar otras URLs o Colecciones.
 
-El menú **Agentes IA** aparece en perfiles y Colecciones con carpeta asignada.
+La configuración **Agentes IA** se abre desde el menú del perfil activo. La
+ejecución y la salida viven en la consola inferior plegable; las Colecciones
+ya no abren la configuración de agentes.
 La ventana es no modal, por lo que se puede seguir usando el navegador
 mientras un agente trabaja.
 

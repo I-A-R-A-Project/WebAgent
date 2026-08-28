@@ -52,6 +52,7 @@ from ai_manager import AIAgentsDialog
 from scripts.website_tools.dialogs import WebsiteToolsDialog
 from new_tab_page import render_new_tab_page
 from task_manager import TaskManager
+from agent_console import AgentConsolePanel
 
 
 class IABrowser(QMainWindow):
@@ -394,10 +395,25 @@ class IABrowser(QMainWindow):
             plus_widget=self.plus_widget,
         )
         right_layout.addWidget(self.tabs)
+        self.console_toggle = QPushButton("⌄ Consola de agentes")
+        self.console_toggle.clicked.connect(self._toggle_agent_console)
+        right_layout.addWidget(self.console_toggle)
+        self.agent_console = AgentConsolePanel(
+            self,
+            lambda: self.current_profile_id,
+            lambda: self.profile_manager.get_profile(self.current_profile_id)["files_dir"],
+            auth_url_handler=self._open_copilot_auth_url,
+        )
+        right_layout.addWidget(self.agent_console, 1)
 
         right_container = QWidget()
         right_container.setLayout(right_layout)
         parent_layout.addWidget(right_container, 1)
+
+    def _toggle_agent_console(self):
+        visible = not self.agent_console.isVisible()
+        self.agent_console.setVisible(visible)
+        self.console_toggle.setText("⌃ Ocultar consola" if visible else "⌄ Consola de agentes")
 
     def _create_navbar(self) -> QToolBar:
         navbar = BasicNavbar(self)
@@ -511,26 +527,6 @@ class IABrowser(QMainWindow):
             self.tabs.tabBar().moveTab(plus_index, last)
 
     def _on_tab_url_changed(self, webview, url: QUrl):
-        if url.scheme() == "ia" and url.host() == "copilot":
-            task_id = parse_qs(url.query()).get("task", [""])[0]
-            profile_id = self.tab_data.get(id(webview), {}).get("profile_id", self.current_profile_id)
-            task = next((item for item in TaskManager(profile_id).tasks if item["id"] == task_id), None)
-            profile = self.profile_manager.get_profile(profile_id)
-            if task and profile:
-                dialog = AIAgentsDialog(
-                    self,
-                    profile.get("files_dir", str(Path.home())),
-                    profile_id=profile_id,
-                    profile_ids=[item["id"] for item in self.profile_manager.profiles],
-                    profile_names={item["id"]: item["name"] for item in self.profile_manager.profiles},
-                    auth_url_handler=self._open_copilot_auth_url,
-                )
-                if dialog.agent_widgets.get("copilot", {}).get("task_edit"):
-                    dialog.agent_widgets["copilot"]["task_edit"].setPlainText(task["text"])
-                dialog.show()
-                self._agent_dialogs = getattr(self, "_agent_dialogs", [])
-                self._agent_dialogs.append(dialog)
-            return
         fragment = url.fragment()
         if fragment.startswith("copilot:"):
             task_id = fragment.split(":", 1)[1]
@@ -539,18 +535,12 @@ class IABrowser(QMainWindow):
             task = next((item for item in manager.tasks if item["id"] == task_id), None)
             profile = self.profile_manager.get_profile(profile_id)
             if task and profile:
-                dialog = AIAgentsDialog(
-                    self,
-                    profile.get("files_dir", str(Path.home())),
-                    profile_id=profile_id,
-                    profile_ids=[item["id"] for item in self.profile_manager.profiles],
-                    profile_names={item["id"]: item["name"] for item in self.profile_manager.profiles},
-                    auth_url_handler=self._open_copilot_auth_url,
+                self.agent_console.agent_combo.setCurrentIndex(
+                    self.agent_console.agent_combo.findData("copilot")
                 )
-                dialog.agent_widgets["copilot"]["task_edit"].setPlainText(task["text"])
-                dialog.show()
-                self._agent_dialogs = getattr(self, "_agent_dialogs", [])
-                self._agent_dialogs.append(dialog)
+                self.agent_console.task_edit.setText(task["text"])
+                self.agent_console.setVisible(True)
+                self.console_toggle.setText("⌃ Ocultar consola")
             return
         if fragment.startswith("task?"):
             text = parse_qs(fragment.split("?", 1)[1], keep_blank_values=True).get("text", [""])[0]
@@ -967,23 +957,22 @@ class IABrowser(QMainWindow):
         elif action == change_folder_action:
             self._change_profile_folder(profile_id)
         elif action == codex_action:
-            self._open_ai_manager(data["files_dir"])
+            self._open_ai_manager(profile_id)
         elif action == git_action:
             self._toggle_profile_git(profile_id)
         elif action == delete_action:
             self._delete_profile(profile_id)
 
-    def _open_ai_manager(self, folder: str):
+    def _open_ai_manager(self, profile_id: str):
+        profile = self.profile_manager.get_profile(profile_id)
+        if not profile:
+            return
+        folder = profile["files_dir"]
         Path(folder).mkdir(parents=True, exist_ok=True)
         dialog = AIAgentsDialog(
             self,
             folder,
-            profile_id=self.current_profile_id,
-            profile_ids=[profile["id"] for profile in self.profile_manager.profiles],
-            profile_names={
-                profile["id"]: profile["name"]
-                for profile in self.profile_manager.profiles
-            },
+            profile_id=profile_id,
             auth_url_handler=self._open_copilot_auth_url,
             auth_success_handler=self._close_copilot_auth_tab,
         )
@@ -1368,10 +1357,6 @@ class IABrowser(QMainWindow):
             git_action = menu.addAction(
                 "✅ Git: sobrescribir (activado)" if git_on else "☐ Git: sobrescribir (desactivado)"
             )
-            codex_action = menu.addAction("🤖 Agentes IA...")
-            if not (collection and collection.get("download_dir")):
-                codex_action.setEnabled(False)
-                codex_action.setToolTip("Asigná primero una carpeta de descarga a esta Colección")
             delete_action = menu.addAction("Eliminar Colección")
 
             action = menu.exec(self.collections_tree.mapToGlobal(pos))
@@ -1379,8 +1364,6 @@ class IABrowser(QMainWindow):
                 self._rename_collection(collection_id)
             elif action == folder_action:
                 self._pick_collection_folder(collection_id)
-            elif action == codex_action:
-                self._open_ai_manager(collection["download_dir"])
             elif action == git_action:
                 self._toggle_collection_git(collection_id)
             elif action == delete_action:
