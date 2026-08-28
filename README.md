@@ -31,7 +31,8 @@ sus propias sesiones, archivos, cookies, credenciales de agentes y ramas Git.
 
 ## Perfiles y seguridad
 
-Cada perfil tiene cookies, cache, sesión, carpeta de archivos, configuración
+Cada perfil tiene cookies, cache y sesión aisladas. Los archivos y descargas
+usan una única carpeta común configurable desde **Configuración → Agentes IA**.
 de agente y cuentas autenticadas independientes. Un perfil puede contener la
 cuenta correspondiente de Copilot, Codex, GitHub, Claude y Gemini. El perfil
 `Default` se usa cuando una Colección no requiere una cuenta específica y no
@@ -59,15 +60,17 @@ Las Colecciones son espacios de trabajo del navegador. Cada una puede guardar:
 - URLs, chats, repositorios y páginas necesarias.
 - Perfil específico por URL para las páginas que requieren una cuenta
   determinada; una misma Colección puede contener URLs de perfiles distintos.
-- Configuración Git y ramas del proyecto.
+- Configuración Git y ramas fijas del proyecto (`master` cruda y `main` final).
 
 Si una URL no tiene perfil asignado, se abre con `Default`. La asignación por
 URL permite abrir cada página con las cookies y la cuenta correctas sin
 cambiar otras URLs o Colecciones.
 
-La configuración **Agentes IA** se abre desde el menú del perfil activo. La
-ejecución y la salida viven en la consola inferior plegable; las Colecciones
-ya no abren la configuración de agentes.
+La configuración **Agentes IA** se abre desde **Configuración → Agentes IA...**.
+El diálogo permite seleccionar y administrar perfiles, cambiar la carpeta
+común de archivos y configurar los agentes. La ejecución y la salida viven en
+la consola inferior plegable; las Colecciones ya no abren la configuración de
+agentes.
 La ventana es no modal, por lo que se puede seguir usando el navegador
 mientras un agente trabaja.
 
@@ -86,9 +89,9 @@ correspondiente. IA Browser no copia cookies ni tokens entre perfiles.
 
 ### Codex
 
-Codex analiza la rama de cambios automáticos y puede reorganizarla en commits
-descriptivos sobre la rama del perfil. Se puede configurar repositorio remoto,
-rama origen y rama destino.
+Codex analiza la rama `master` de cambios automáticos y puede reorganizarla en
+commits descriptivos sobre la rama final `main`. Se puede configurar el
+repositorio remoto, pero no las ramas por perfil.
 
 Instalación:
 

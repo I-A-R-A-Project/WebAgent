@@ -158,7 +158,7 @@ class IABrowser(QMainWindow):
             self,
             data["storage_path"],
             data["cache_path"],
-            download_path=data.get("files_dir"),
+            download_path=self.profile_manager.get_files_dir(),
         )
         qt_profile.downloadRequested.connect(self._on_download_requested)
 
@@ -291,11 +291,25 @@ class IABrowser(QMainWindow):
 
     def _setup_ui(self):
         content_widget = QWidget()
-        main_layout = QHBoxLayout(content_widget)
+        main_layout = QVBoxLayout(content_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
-        self._setup_sidebar(main_layout)
-        self._setup_tabs_and_navbar(main_layout)
+        content_row = QWidget()
+        row_layout = QHBoxLayout(content_row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        self._setup_sidebar(row_layout)
+        self._setup_tabs_and_navbar(row_layout)
+        main_layout.addWidget(content_row, 1)
+        self.console_toggle = QPushButton("⌄ Consola de agentes")
+        self.console_toggle.clicked.connect(self._toggle_agent_console)
+        main_layout.addWidget(self.console_toggle, 0)
+        self.agent_console = AgentConsolePanel(
+            self,
+            lambda: self.current_profile_id,
+            lambda: self.profile_manager.get_files_dir(),
+            auth_url_handler=self._open_copilot_auth_url,
+        )
+        main_layout.addWidget(self.agent_console, 0)
 
         self.rail = SidebarRail()
         self.rail.on_toggle = self._on_sidebar_app_clicked
@@ -340,7 +354,7 @@ class IABrowser(QMainWindow):
 
         manage_profile_btn = QPushButton("⚙")
         manage_profile_btn.setFixedWidth(32)
-        manage_profile_btn.setToolTip("Nuevo perfil, renombrar, cambiar carpeta, Git o eliminar")
+        manage_profile_btn.setToolTip("Configurar agentes, perfiles y carpeta común")
         manage_profile_btn.clicked.connect(self._manage_profile_menu)
         profile_row.addWidget(manage_profile_btn)
         sidebar_layout.addLayout(profile_row)
@@ -395,17 +409,6 @@ class IABrowser(QMainWindow):
             plus_widget=self.plus_widget,
         )
         right_layout.addWidget(self.tabs)
-        self.console_toggle = QPushButton("⌄ Consola de agentes")
-        self.console_toggle.clicked.connect(self._toggle_agent_console)
-        right_layout.addWidget(self.console_toggle)
-        self.agent_console = AgentConsolePanel(
-            self,
-            lambda: self.current_profile_id,
-            lambda: self.profile_manager.get_profile(self.current_profile_id)["files_dir"],
-            auth_url_handler=self._open_copilot_auth_url,
-        )
-        right_layout.addWidget(self.agent_console, 1)
-
         right_container = QWidget()
         right_container.setLayout(right_layout)
         parent_layout.addWidget(right_container, 1)
@@ -692,7 +695,12 @@ class IABrowser(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
-        view_menu = menubar.addMenu("&Vista")
+        view_menu = menubar.addMenu("&Configuración")
+
+        agents_action = QAction("Agentes IA...", self)
+        agents_action.triggered.connect(lambda: self._open_ai_manager(self.current_profile_id))
+        view_menu.addAction(agents_action)
+        view_menu.addSeparator()
 
         website_action = QAction("🌐 Website Tools...", self)
         website_action.setToolTip("Crawlear y analizar una URL")
@@ -823,7 +831,7 @@ class IABrowser(QMainWindow):
         profile_id = tab_meta.get("profile_id", self.current_profile_id)
         profile_data = self.profile_manager.get_profile(profile_id)
         if profile_data:
-            return profile_data["files_dir"], f"perfil '{profile_data['name']}'"
+            return self.profile_manager.get_files_dir(), "carpeta común de archivos"
         return str(Path.home()), "carpeta personal"
 
     def _copy_file_to_folder(self, filepath: str, target_dir: str, context_label: str, silent: bool = False):
@@ -911,7 +919,7 @@ class IABrowser(QMainWindow):
         data = self.profile_manager.get_profile(self.current_profile_id)
         if data:
             git_txt = " · Git ✅" if data.get("git_versioning") else ""
-            self.profile_info_label.setText(f"Archivos: {data['files_dir']}{git_txt}")
+            self.profile_info_label.setText(f"Archivos comunes: {self.profile_manager.get_files_dir()}{git_txt}")
             self.setWindowTitle(f"IA Browser — {data['name']}")
 
     def _on_profile_combo_changed(self, index: int):
@@ -923,56 +931,29 @@ class IABrowser(QMainWindow):
         self._open_new_tab_with_profile(profile_id)
 
     def _manage_profile_menu(self):
-        """Menú de gestión (nuevo, renombrar, carpeta, Git, eliminar) para
-        el perfil seleccionado en el combo."""
+        """Abre la configuración central de agentes y perfiles."""
         profile_id = self.profiles_combo.currentData()
-        data = self.profile_manager.get_profile(profile_id)
-        if not data:
-            return
-        git_on = bool(data.get("git_versioning"))
-
-        menu = QMenu(self)
-        new_action = menu.addAction("+ Nuevo perfil...")
-        menu.addSeparator()
-        rename_action = menu.addAction("Cambiar nombre...")
-        home_action = menu.addAction("Cambiar página de inicio...")
-        change_folder_action = menu.addAction("Cambiar carpeta de archivos...")
-        git_action = menu.addAction(
-            "✅ Git: sobrescribir (activado)" if git_on else "☐ Git: sobrescribir (desactivado)"
-        )
-        codex_action = menu.addAction("🤖 Agentes IA...")
-        delete_action = menu.addAction("Eliminar perfil")
-        if data.get("is_default"):
-            delete_action.setEnabled(False)
-            delete_action.setToolTip("El perfil Default no se puede eliminar")
-
-        sender = self.sender()
-        action = menu.exec(sender.mapToGlobal(sender.rect().bottomLeft()))
-        if action == new_action:
-            self._create_profile_dialog()
-        elif action == rename_action:
-            self._rename_profile(profile_id)
-        elif action == home_action:
-            self._change_profile_home(profile_id)
-        elif action == change_folder_action:
-            self._change_profile_folder(profile_id)
-        elif action == codex_action:
+        if profile_id:
             self._open_ai_manager(profile_id)
-        elif action == git_action:
-            self._toggle_profile_git(profile_id)
-        elif action == delete_action:
-            self._delete_profile(profile_id)
 
     def _open_ai_manager(self, profile_id: str):
         profile = self.profile_manager.get_profile(profile_id)
         if not profile:
             return
-        folder = profile["files_dir"]
+        folder = self.profile_manager.get_files_dir()
         Path(folder).mkdir(parents=True, exist_ok=True)
         dialog = AIAgentsDialog(
             self,
             folder,
             profile_id=profile_id,
+            profile_ids=[p["id"] for p in self.profile_manager.profiles],
+            profile_names={p["id"]: p["name"] for p in self.profile_manager.profiles},
+            profile_changed_handler=self._on_agent_profile_changed,
+            new_profile_handler=self._create_profile_dialog,
+            rename_profile_handler=self._rename_profile,
+            delete_profile_handler=self._delete_profile,
+            folder_changed_handler=self._change_shared_folder,
+            git_changed_handler=self._set_shared_git,
             auth_url_handler=self._open_copilot_auth_url,
             auth_success_handler=self._close_copilot_auth_tab,
         )
@@ -988,6 +969,36 @@ class IABrowser(QMainWindow):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+    def _on_agent_profile_changed(self, profile_id):
+        if profile_id and profile_id != self.current_profile_id:
+            self._open_new_tab_with_profile(profile_id)
+            self._load_profiles_list()
+
+    def _change_shared_folder(self):
+        directory = QFileDialog.getExistingDirectory(
+            self, "Seleccionar carpeta común de archivos",
+            self.profile_manager.get_files_dir(),
+        )
+        if directory:
+            self.profile_manager.set_files_dir(directory)
+            for profile_id, qt_profile in self.web_engine_profiles.items():
+                try:
+                    qt_profile.setDownloadPath(directory)
+                except AttributeError:
+                    pass
+            self._highlight_active_profile()
+
+    def _set_shared_git(self, enabled: bool):
+        if enabled and not GitVersioning.is_available():
+            QMessageBox.warning(self, "Git no encontrado", "No se encontró 'git' en el sistema.")
+            return
+        for profile in self.profile_manager.profiles:
+            profile["git_versioning"] = bool(enabled)
+        self.profile_manager.save_profiles()
+        if enabled:
+            GitVersioning.ensure_repo(self.profile_manager.get_files_dir())
+        self._highlight_active_profile()
 
     def _open_copilot_auth_url(self, url: str, profile_id: str, code: str = ""):
         """Open Copilot device authorization inside matching IA profile."""
@@ -1041,21 +1052,6 @@ class IABrowser(QMainWindow):
                     widget.deleteLater()
                     return
 
-    def _change_profile_home(self, profile_id: str):
-        data = self.profile_manager.get_profile(profile_id)
-        if not data:
-            return
-        new_home, ok = QInputDialog.getText(
-            self, "Página de inicio", "URL de inicio para este perfil:", text=data["home_url"]
-        )
-        new_home = new_home.strip()
-        if not ok or not new_home:
-            return
-        if not new_home.startswith(("http://", "https://")):
-            new_home = f"https://{new_home}"
-        self.profile_manager.update_profile(profile_id, home_url=new_home)
-        self.statusBar().showMessage(f"Página de inicio de '{data['name']}' actualizada", 4000)
-
     def _toggle_profile_git(self, profile_id: str):
         data = self.profile_manager.get_profile(profile_id)
         if not data:
@@ -1066,8 +1062,8 @@ class IABrowser(QMainWindow):
             return
         self.profile_manager.update_profile(profile_id, git_versioning=new_value)
         if new_value:
-            GitVersioning.ensure_repo(data["files_dir"])
-            if not GitVersioning.check_identity(data["files_dir"]):
+            GitVersioning.ensure_repo(self.profile_manager.get_files_dir())
+            if not GitVersioning.check_identity(self.profile_manager.get_files_dir()):
                 self._set_git_warning(
                     "⚠ Git no tiene user.name/user.email configurados: los commits "
                     "no se van a guardar hasta que los configures."
@@ -1093,12 +1089,11 @@ class IABrowser(QMainWindow):
     def _create_profile_dialog(self):
         dialog = NewProfileDialog(self, default_dir=str(Path.home() / "Downloads"))
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            name, files_dir, git_versioning = dialog.get_values()
+            name, _files_dir, git_versioning = dialog.get_values()
             if not name:
                 QMessageBox.warning(self, "Aviso", "El perfil necesita un nombre")
                 return
-            if not files_dir:
-                files_dir = str(Path.home() / "Downloads")
+            files_dir = self.profile_manager.get_files_dir()
             if git_versioning and not GitVersioning.is_available():
                 QMessageBox.warning(
                     self, "Git no encontrado",
@@ -1106,7 +1101,8 @@ class IABrowser(QMainWindow):
                     "igual, pero sin versionado hasta que instales git.",
                 )
 
-            new_profile = self.profile_manager.create_profile(name, files_dir, git_versioning)
+            shared_git = any(p.get("git_versioning") for p in self.profile_manager.profiles)
+            new_profile = self.profile_manager.create_profile(name, files_dir, shared_git)
             self._load_profiles_list()
             self._open_new_tab_with_profile(new_profile["id"])
             if git_versioning and not GitVersioning.check_identity(files_dir):
@@ -1114,23 +1110,6 @@ class IABrowser(QMainWindow):
                     "⚠ Git no tiene user.name/user.email configurados: los commits "
                     "no se van a guardar hasta que los configures."
                 )
-
-    def _change_profile_folder(self, profile_id: str):
-        data = self.profile_manager.get_profile(profile_id)
-        if not data:
-            return
-        directory = QFileDialog.getExistingDirectory(
-            self, "Seleccionar carpeta de archivos", data["files_dir"]
-        )
-        if directory:
-            self.profile_manager.update_profile(profile_id, files_dir=directory)
-            qt_profile = self.web_engine_profiles.get(profile_id)
-            if qt_profile:
-                try:
-                    qt_profile.setDownloadPath(directory)
-                except AttributeError:
-                    pass
-            self._highlight_active_profile()
 
     def _delete_profile(self, profile_id: str):
         data = self.profile_manager.get_profile(profile_id)

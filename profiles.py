@@ -3,7 +3,7 @@ profiles.py - Perfiles de navegador para IA Browser.
 
 Contiene:
   - ProfileManager: maneja perfiles persistentes e independientes
-    (sesión/cookies/cache aislados, carpeta de archivos propia, home_url y zoom).
+    (sesión/cookies/cache aislados, carpeta común de archivos, home_url y zoom).
   - NewProfileDialog: diálogo para crear / renombrar un perfil.
 """
 
@@ -31,8 +31,8 @@ class ProfileManager:
 
     Cada perfil tiene:
       - storage_path / cache_path propios (sesión, cookies, cache aislados)
-      - files_dir: carpeta general de descargas/archivos del perfil
-      - home_url y zoom propios
+      - almacenamiento del navegador y zoom propios
+      - una carpeta común de archivos/descargas
     """
 
     def __init__(self):
@@ -41,6 +41,7 @@ class ProfileManager:
         self.profiles_dir = self.base_dir / "profiles"
         self.profiles_dir.mkdir(exist_ok=True)
         self.profiles_file = self.base_dir / "profiles.json"
+        self.files_dir_file = self.base_dir / "files_dir.txt"
         self.load_profiles()
 
     def load_profiles(self):
@@ -60,7 +61,31 @@ class ProfileManager:
             self.save_profiles()
         else:
             self._sync_default_with_minibrowser_profile()
+            self._migrate_shared_files_dir()
             self.save_profiles()
+
+    def get_files_dir(self) -> str:
+        if self.files_dir_file.exists():
+            value = self.files_dir_file.read_text(encoding="utf-8").strip()
+            if value:
+                return value
+        if self.profiles:
+            return self.profiles[0].get("files_dir", str(self.base_dir / "downloads"))
+        return str(self.base_dir / "downloads")
+
+    def set_files_dir(self, directory: str):
+        directory = str(Path(directory))
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        self.files_dir_file.write_text(directory, encoding="utf-8")
+        for profile in self.profiles:
+            profile["files_dir"] = directory
+        self.save_profiles()
+
+    def _migrate_shared_files_dir(self):
+        directory = self.get_files_dir()
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        for profile in self.profiles:
+            profile["files_dir"] = directory
 
     def _sync_default_with_minibrowser_profile(self):
         default = None
@@ -109,8 +134,8 @@ class ProfileManager:
             "created": datetime.now().isoformat(),
         }
 
-    def create_profile(self, name: str, files_dir: str, git_versioning: bool = False) -> dict:
-        entry = self._build_profile_entry(name, files_dir, git_versioning)
+    def create_profile(self, name: str, files_dir: str | None = None, git_versioning: bool = False) -> dict:
+        entry = self._build_profile_entry(name, files_dir or self.get_files_dir(), git_versioning)
         self.profiles.append(entry)
         self.save_profiles()
         return entry
@@ -148,13 +173,11 @@ class ProfileManager:
 
 
 class NewProfileDialog(QDialog):
-    """Dialog to create / rename a browser profile and choose its folder."""
+    """Dialog to create or rename a browser profile."""
 
     def __init__(self, parent=None, default_name: str = "", default_dir: str = ""):
         super().__init__(parent)
         self.setWindowTitle("Perfil")
-        self.selected_dir = default_dir
-
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
@@ -162,21 +185,7 @@ class NewProfileDialog(QDialog):
         self.name_edit.setPlaceholderText("Ej: Trabajo, Personal...")
         form.addRow("Nombre del perfil:", self.name_edit)
 
-        dir_row = QHBoxLayout()
-        self.dir_label = QLabel(self.selected_dir or "(sin seleccionar)")
-        dir_btn = QPushButton("Elegir carpeta...")
-        dir_btn.clicked.connect(self._choose_dir)
-        dir_row.addWidget(self.dir_label, 1)
-        dir_row.addWidget(dir_btn)
-        form.addRow("Carpeta de archivos\n(descargas y acceso local):", dir_row)
-
         layout.addLayout(form)
-
-        self.git_checkbox = QCheckBox(
-            "Usar Git para versionar y SOBRESCRIBIR archivos con el mismo\n"
-            "nombre (código, texto, etc.) en vez de numerarlos"
-        )
-        layout.addWidget(self.git_checkbox)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -185,15 +194,5 @@ class NewProfileDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _choose_dir(self):
-        directory = QFileDialog.getExistingDirectory(
-            self, "Seleccionar carpeta de archivos", self.selected_dir or str(Path.home())
-        )
-        if directory:
-            self.selected_dir = directory
-            self.dir_label.setText(directory)
-
     def get_values(self):
-        return self.name_edit.text().strip(), self.selected_dir, self.git_checkbox.isChecked()
-
-
+        return self.name_edit.text().strip(), "", False

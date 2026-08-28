@@ -184,6 +184,8 @@ class AgentConfigStore:
 
         # Ensure autorun key exists for backward compatibility
         entry.setdefault("autorun", {"enabled": False, "command": ""})
+        entry["source_branch"] = "master"
+        entry["target_branch"] = "main"
 
         for aid, defn in AGENT_DEFS.items():
             current = entry["agents"][aid].get("command", "")
@@ -227,6 +229,9 @@ class AIAgentsDialog(QDialog):
 
     def __init__(self, parent, folder: str, profile_id: str | None = None,
                  profile_ids: list[str] | None = None, profile_names: dict[str, str] | None = None,
+                 profile_changed_handler=None, new_profile_handler=None,
+                 rename_profile_handler=None, delete_profile_handler=None,
+                 folder_changed_handler=None, git_changed_handler=None,
                  auth_url_handler=None, auth_success_handler=None):
         super().__init__(parent)
         # Normalizamos a separadores nativos del SO (Qt suele devolver
@@ -236,16 +241,19 @@ class AIAgentsDialog(QDialog):
         self.profile_id = profile_id or "default"
         self.profile_ids = profile_ids or [self.profile_id]
         self.profile_names = profile_names or {}
+        self.profile_changed_handler = profile_changed_handler
+        self.new_profile_handler = new_profile_handler
+        self.rename_profile_handler = rename_profile_handler
+        self.delete_profile_handler = delete_profile_handler
+        self.folder_changed_handler = folder_changed_handler
+        self.git_changed_handler = git_changed_handler
         self.auth_url_handler = auth_url_handler
         self.auth_success_handler = auth_success_handler
         self.copilot_home = Path.home() / ".ia_browser" / "copilot_profiles" / self.profile_id
-        self.raw_branch, self.profile_branch = GitVersioning.profile_branch_names(self.profile_id)
+        self.raw_branch = "master"
+        self.profile_branch = "main"
         self.config_store = AgentConfigStore()
         config = self.config_store.get(self.folder)
-        if config["source_branch"] == "master" and config["target_branch"] == "main":
-            self.config_store.set_branches(
-                self.folder, self.raw_branch, self.profile_branch
-            )
         self.process: QProcess | None = None
         self.active_agent: str | None = None
         self.agent_widgets: dict = {}
@@ -261,13 +269,43 @@ class AIAgentsDialog(QDialog):
         self.resize(680, 640)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"📁 {folder}"))
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("Perfil:"))
+        self.profile_combo = QComboBox()
+        for item in self.profile_ids:
+            self.profile_combo.addItem(self.profile_names.get(item, item), item)
+        self.profile_combo.setCurrentIndex(max(0, self.profile_combo.findData(self.profile_id)))
+        self.profile_combo.currentIndexChanged.connect(self._select_copilot_profile)
+        profile_row.addWidget(self.profile_combo, 1)
+        new_btn = QPushButton("+ Nuevo")
+        new_btn.clicked.connect(lambda: self.new_profile_handler and self.new_profile_handler())
+        profile_row.addWidget(new_btn)
+        rename_btn = QPushButton("Renombrar")
+        rename_btn.clicked.connect(lambda: self.rename_profile_handler and self.rename_profile_handler(self.profile_combo.currentData()))
+        profile_row.addWidget(rename_btn)
+        delete_btn = QPushButton("Eliminar")
+        delete_btn.clicked.connect(lambda: self.delete_profile_handler and self.delete_profile_handler(self.profile_combo.currentData()))
+        profile_row.addWidget(delete_btn)
+        layout.addLayout(profile_row)
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(QLabel(f"Archivos: {folder}"), 1)
+        folder_btn = QPushButton("Cambiar carpeta...")
+        folder_btn.clicked.connect(lambda: self.folder_changed_handler and self.folder_changed_handler())
+        folder_row.addWidget(folder_btn)
+        layout.addLayout(folder_row)
+        git_box = QCheckBox("Usar Git para sobrescribir y versionar archivos")
+        active_profile = next((p for p in (self.profile_ids or []) if p == self.profile_id), None)
+        if active_profile:
+            # The main window supplies the authoritative shared setting.
+            profile_data = getattr(parent, "profile_manager", None)
+            git_box.setChecked(bool(profile_data.get_profile(active_profile).get("git_versioning")) if profile_data else False)
+        git_box.toggled.connect(lambda value: self.git_changed_handler and self.git_changed_handler(value))
+        layout.addWidget(git_box)
         self.agents_tabs = QTabWidget()
 
         config_tab = QWidget()
         config_layout = QVBoxLayout(config_tab)
         self._build_repo_section(config_layout)
-        self._build_branches_section(config_layout)
         self._build_autorun_section(config_layout)
         config_layout.addStretch()
         self.agents_tabs.addTab(config_tab, "⚙ Config")
@@ -318,19 +356,21 @@ class AIAgentsDialog(QDialog):
                 self.copilot_auth_code = ""
 
     def _select_copilot_profile(self, index):
-        selected = self.copilot_profile_combo.itemData(index)
+        selected = self.profile_combo.itemData(index)
         if not selected or selected == self.profile_id:
             return
         if self.process is not None:
-            self.copilot_profile_combo.blockSignals(True)
-            self.copilot_profile_combo.setCurrentIndex(
-                self.copilot_profile_combo.findData(self.profile_id)
+            self.profile_combo.blockSignals(True)
+            self.profile_combo.setCurrentIndex(
+                self.profile_combo.findData(self.profile_id)
             )
-            self.copilot_profile_combo.blockSignals(False)
+            self.profile_combo.blockSignals(False)
             QMessageBox.information(self, "Copilot", "Detené el proceso antes de cambiar de perfil.")
             return
         self.profile_id = selected
         self.copilot_home = Path.home() / ".ia_browser" / "copilot_profiles" / selected
+        if self.profile_changed_handler:
+            self.profile_changed_handler(selected)
 
     # ---------- Sección: estado del repo / remoto ----------
 
@@ -433,32 +473,6 @@ class AIAgentsDialog(QDialog):
             )
 
         self._refresh_repo_status()
-
-    # ---------- Sección: ramas ----------
-
-    def _build_branches_section(self, layout):
-        box = QGroupBox("Ramas")
-        form = QFormLayout(box)
-
-        cfg = self.config_store.get(self.folder)
-        self.source_branch_edit = QLineEdit(cfg["source_branch"])
-        self.source_branch_edit.setPlaceholderText("Rama cruda (commits automáticos de descargas)")
-        form.addRow("Rama cruda:", self.source_branch_edit)
-
-        self.target_branch_edit = QLineEdit(cfg["target_branch"])
-        self.target_branch_edit.setPlaceholderText("Rama limpia (donde trabajan los 3 agentes)")
-        form.addRow("Rama limpia (destino):", self.target_branch_edit)
-
-        save_branches_btn = QPushButton("Guardar ramas")
-        save_branches_btn.clicked.connect(self._save_branches)
-        form.addRow("", save_branches_btn)
-
-        layout.addWidget(box)
-
-    def _save_branches(self):
-        source = self.source_branch_edit.text().strip() or self.raw_branch
-        target = self.target_branch_edit.text().strip() or self.profile_branch
-        self.config_store.set_branches(self.folder, source, target)
 
     def _build_autorun_section(self, layout):
         box = QGroupBox("Autorun al terminar un agente")
@@ -615,8 +629,8 @@ class AIAgentsDialog(QDialog):
             return
 
         cfg = self.config_store.get(self.folder)
-        source = self.source_branch_edit.text().strip() or self.raw_branch
-        target = self.target_branch_edit.text().strip() or self.profile_branch
+        source = "master"
+        target = "main"
         self.config_store.set_branches(self.folder, source, target)
 
         widgets = self.agent_widgets[agent_id]
@@ -915,11 +929,11 @@ class AIAgentsDialog(QDialog):
         self.pending_copilot_retry = True
         self.profile_id = next_profile
         self.copilot_home = Path.home() / ".ia_browser" / "copilot_profiles" / next_profile
-        self.copilot_profile_combo.blockSignals(True)
-        self.copilot_profile_combo.setCurrentIndex(
-            self.copilot_profile_combo.findData(next_profile)
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.setCurrentIndex(
+            self.profile_combo.findData(next_profile)
         )
-        self.copilot_profile_combo.blockSignals(False)
+        self.profile_combo.blockSignals(False)
         self._append_log(f"\n--- Cuota agotada; rotando a perfil {next_profile} ---\n")
         if self.process:
             self.process.kill()
