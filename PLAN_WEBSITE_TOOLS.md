@@ -17,7 +17,8 @@
   texto/atributos y exportación JSON/JSONL/CSV/SQLite.
 - UI de crawl actualizada con estado en vivo de páginas procesadas y profundidad.
 - Whitelist/blacklist de URLs y de contenido HTML integrada en crawler, CLI y UI.
-- Sitio local de prueba: `http://127.0.0.1:8765/`.
+- El crawler respeta `robots.txt` por defecto y permite omitirlo explícitamente
+  solo para entornos controlados.
 
 ## Próximas fases
 
@@ -55,7 +56,6 @@
 ## Comandos de prueba
 
 ```bash
-python scripts/website_tools_test_server.py
-python scripts/website_crawl.py http://127.0.0.1:8765/ --output crawl.json --max-depth 1
+python scripts/website_crawl.py https://example.com/ --output crawl.json --max-depth 1
 python scripts/website_analyze.py crawl.json --output report.json
 ```

@@ -7,6 +7,7 @@ from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urldefrag, urljoin, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
+from urllib import robotparser
 import ssl
 import time
 
@@ -25,6 +26,7 @@ class CrawlConfig:
     blocked_url_patterns: list[str] = field(default_factory=list)
     allowed_content_selectors: list[str] = field(default_factory=list)
     blocked_content_selectors: list[str] = field(default_factory=list)
+    respect_robots: bool = True
 
 
 @dataclass
@@ -167,6 +169,15 @@ def crawl(
     queued = {start}
     result = CrawlResult()
     context = ssl.create_default_context() if config.verify_tls else ssl._create_unverified_context()
+    robots = robotparser.RobotFileParser()
+    robots.set_url(urljoin(start, "/robots.txt"))
+    if config.respect_robots:
+        try:
+            request = Request(robots.url, headers={"User-Agent": config.user_agent})
+            with urlopen(request, timeout=config.timeout, context=context) as response:
+                robots.parse(response.read(1_000_000).decode("utf-8", errors="replace").splitlines())
+        except (OSError, URLError):
+            robots = None
 
     while queue and len(result.pages) < config.max_pages:
         if stop_requested and stop_requested():
@@ -174,6 +185,13 @@ def crawl(
             break
         url, depth = queue.pop(0)
         page = PageResult(url=url, depth=depth)
+        if robots is not None and not robots.can_fetch(config.user_agent, url):
+            page.error = "blocked-by-robots.txt"
+            result.pages.append(page)
+            result.visited = len(result.pages)
+            if on_page:
+                on_page(page)
+            continue
         try:
             request = Request(url, headers={"User-Agent": config.user_agent})
             with urlopen(request, timeout=config.timeout, context=context) as response:

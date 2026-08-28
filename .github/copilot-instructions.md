@@ -142,10 +142,6 @@ again.
 `website_tools.scraper` provides CSS-selector JSON extraction for text and
 attributes, with JSON/CSV output through `scripts/website_scrape.py`.
 
-For local testing, run `python scripts/website_tools_test_server.py` and use
-`http://127.0.0.1:8765/`. The fixture contains internal links, a duplicate
-title, a missing description, and a broken link.
-
 The same flow is available in the GUI under **View -> Website Tools...**. It
 prefills the current tab URL and runs the bounded crawl in a worker thread so
 the browser UI remains responsive.

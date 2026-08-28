@@ -176,12 +176,11 @@ python scripts/website_crawl.py https://example.com --output crawl.json --max-de
 Por defecto limita profundidad y cantidad de páginas, sigue solo enlaces
 HTTP/HTTPS del dominio permitido y exporta resultados compactos en JSON.
 Se puede restringir explícitamente el alcance con patrones URL y selectores
-HTML. Por ejemplo, para limitarse al SCP Wiki y solo procesar su contenido
-principal:
+HTML:
 
 ```bash
-python scripts/website_crawl.py https://scp-wiki.wikidot.com/ \
-  --output scp-crawl.json --allow-url "https://scp-wiki.wikidot.com/*" \
+python scripts/website_crawl.py https://example.com/ \
+  --output crawl.json --allow-url "https://example.com/*" \
   --allow-selector "#main-content" --block-selector ".ads,footer"
 ```
 
@@ -189,7 +188,8 @@ python scripts/website_crawl.py https://scp-wiki.wikidot.com/ \
 `--allow-selector` limita enlaces, títulos, metadatos y encabezados a los
 elementos seleccionados; `--block-selector` excluye esos elementos y sus
 descendientes. Los selectores soportados son `tag`, `#id`, `.clase` y
-`[atributo=valor]`.
+`[atributo=valor]`. El crawler respeta `robots.txt` por defecto; usar
+`--ignore-robots` únicamente en entornos controlados.
 
 El informe técnico se genera en una segunda etapa, sin volver a descargar el
 sitio:
@@ -210,22 +210,7 @@ python scripts/website_download.py crawl.json --output sitio-descargado --max-pa
 ```
 
 El Scraper MVP acepta una regla JSON con selector de elementos y campos de
-texto o atributos:
-
-```bash
-python scripts/website_scrape.py crawl.json --rule website_tools/test_site/products-rule.json --output rows.csv --format csv
-```
-
-Para probarlo sin depender de Internet, iniciá el sitio interno:
-
-```bash
-python scripts/website_tools_test_server.py
-python scripts/website_crawl.py http://127.0.0.1:8765/ --output test-crawl.json --max-depth 1 --max-pages 10
-python scripts/website_analyze.py test-crawl.json --output test-report.json
-```
-
-La URL interna es `http://127.0.0.1:8765/`. Incluye páginas enlazadas,
-títulos duplicados, una meta descripción ausente y un enlace roto.
+texto o atributos, y puede exportar JSON, JSONL, CSV o SQLite.
 
 También podés abrir **Vista → Website Tools...** desde la interfaz. El diálogo
 precompleta la URL de la pestaña actual, permite elegir el tipo de operación,

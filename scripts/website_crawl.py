@@ -23,6 +23,7 @@ def main() -> int:
     parser.add_argument("--block-url", action="append", default=[], help="Patrón URL blacklist; repetir para varios")
     parser.add_argument("--allow-selector", action="append", default=[], help="Selector CSS cuyo contenido se procesa")
     parser.add_argument("--block-selector", action="append", default=[], help="Selector CSS cuyo contenido se ignora")
+    parser.add_argument("--ignore-robots", action="store_true", help="No consultar ni respetar robots.txt")
     args = parser.parse_args()
     if args.max_depth < 0 or args.max_pages < 1 or args.delay < 0:
         parser.error("Los límites deben ser positivos; max-depth puede ser cero.")
@@ -36,6 +37,7 @@ def main() -> int:
         blocked_url_patterns=args.block_url,
         allowed_content_selectors=args.allow_selector,
         blocked_content_selectors=args.block_selector,
+        respect_robots=not args.ignore_robots,
     ))
     save_crawl(result, args.output)
     print(f"Páginas visitadas: {result.visited}")
