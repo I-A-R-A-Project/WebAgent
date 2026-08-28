@@ -9,6 +9,8 @@ IA Browser is a desktop web browser built with PyQt6 that manages isolated brows
 - **Profiles**: Isolated browser instances with separate storage, cache, home URLs, and zoom levels
 - **Collections**: Bookmarks/URLs with optional download folders and Git integration
 - **Agents**: Copilot CLI, Codex, and AnyAPI integration via `ai_manager.py`
+- **Task inbox**: `new_tab_page.py` and `task_manager.py` provide the local
+  task list; AnyAPI classifies tasks and Copilot remains the explicit executor.
 - **Git Versioning**: Downloads can be version-controlled instead of numbered duplicates
 - **web_common** (sibling directory): Shared UI components (tabs, navbars, sidebars, web profiles)
 

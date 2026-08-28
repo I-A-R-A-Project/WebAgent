@@ -159,6 +159,8 @@ IA/
 ├── collections_manager.py  # Colecciones y marcadores multi-perfil
 ├── downloads.py            # Descargas, reemplazo y extracción
 ├── ai_manager.py           # Terminal integrada y gestión de agentes
+├── new_tab_page.py         # Búsqueda Google y bandeja de tareas
+├── task_manager.py         # Persistencia y clasificación de tareas
 ├── scripts/website_tools/   # Crawling y extracción web controlada
 ├── web_engine.py           # Popups OAuth y vistas locales
 ├── file_ops.py             # Git, ramas y operaciones de archivos

@@ -11,6 +11,7 @@ import sys
 import os
 import shutil
 from pathlib import Path
+from urllib.parse import parse_qs
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from datetime import datetime
@@ -49,6 +50,8 @@ from web_common import folder_viewer
 from web_common.web_profiles import build_web_profile
 from ai_manager import AIAgentsDialog
 from scripts.website_tools.dialogs import WebsiteToolsDialog
+from new_tab_page import render_new_tab_page
+from task_manager import TaskManager
 
 
 class IABrowser(QMainWindow):
@@ -479,6 +482,11 @@ class IABrowser(QMainWindow):
         insert_at = self.tabs.indexOf(self.plus_widget)
         tab_index = self.tabs.insertTab(insert_at, webview, "Nueva pestaña")
         self.tabs.setCurrentIndex(tab_index)
+        task_manager = TaskManager(profile_id)
+        webview.page().setHtml(
+            render_new_tab_page(task_manager.tasks),
+            QUrl("ia://new-tab"),
+        )
         self.session_autosaver.schedule()
         return webview
 
@@ -503,6 +511,27 @@ class IABrowser(QMainWindow):
             self.tabs.tabBar().moveTab(plus_index, last)
 
     def _on_tab_url_changed(self, webview, url: QUrl):
+        if url.scheme() == "ia" and url.host() == "task":
+            text = parse_qs(url.query(), keep_blank_values=True).get("text", [""])[0]
+            profile_id = self.tab_data.get(id(webview), {}).get("profile_id", self.current_profile_id)
+            manager = TaskManager(profile_id)
+            task = manager.add(text.strip(), self.collection_manager.collections)
+            api_key = os.environ.get("ANYAPI_API_KEY", "")
+            if api_key:
+                try:
+                    task = manager.classify_with_anyapi(task, self.collection_manager.collections, api_key)
+                except (OSError, ValueError, KeyError) as exc:
+                    self.statusBar().showMessage(f"AnyAPI no pudo clasificar la tarea: {exc}", 6000)
+            webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("ia://new-tab"))
+            if not task["collection_id"]:
+                answer = QMessageBox.question(self, "Nueva Colección", f"La tarea no coincide con una Colección.\n¿Crear una para «{text}»?")
+                if answer == QMessageBox.StandardButton.Yes:
+                    collection = self.collection_manager.create_collection(text[:60].strip() or "Nueva tarea")
+                    task["collection_id"] = collection["id"]
+                    task["collection_name"] = collection["name"]
+                    manager.save()
+                    webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("ia://new-tab"))
+            return
         if webview is not self.current_webview():
             return
         self.current_url = url.toString()
@@ -537,7 +566,11 @@ class IABrowser(QMainWindow):
         webview = self._add_tab(profile_id=profile_id)
         data = self.profile_manager.get_profile(profile_id)
         if data:
-            self.load_url(data["home_url"])
+            task_manager = TaskManager(profile_id)
+            webview.page().setHtml(
+                render_new_tab_page(task_manager.tasks),
+                QUrl("ia://new-tab"),
+            )
             webview.setZoomFactor(data.get("zoom", 1.0))
         return webview
 
