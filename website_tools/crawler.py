@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
-from pathlib import Path
 from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urldefrag, urljoin, urlsplit, urlunsplit

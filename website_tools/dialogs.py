@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
-    QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+    QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
     QMessageBox, QPushButton, QSpinBox, QTextEdit, QVBoxLayout,
 )
 
@@ -57,6 +57,9 @@ class WebsiteToolsDialog(QDialog):
         self.pages_spin.setRange(1, 10000)
         self.pages_spin.setValue(25)
         form.addRow("Máximo de páginas:", self.pages_spin)
+        self.insecure_tls = QCheckBox("Omitir verificación TLS (solo sitios de prueba)")
+        self.insecure_tls.setToolTip("No usar en sitios con credenciales o datos sensibles.")
+        form.addRow("", self.insecure_tls)
         layout.addLayout(form)
 
         buttons = QHBoxLayout()
@@ -91,6 +94,7 @@ class WebsiteToolsDialog(QDialog):
             start_url=url,
             max_depth=self.depth_spin.value(),
             max_pages=self.pages_spin.value(),
+            verify_tls=not self.insecure_tls.isChecked(),
         )
         self.thread = QThread(self)
         self.worker = _CrawlWorker(config)

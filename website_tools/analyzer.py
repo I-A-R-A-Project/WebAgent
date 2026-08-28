@@ -36,7 +36,7 @@ def analyze(result: CrawlResult) -> SiteReport:
     for page in result.pages:
         issues = []
         if page.error:
-            issues.append("request-error")
+            issues.append(f"request-error: {page.error}")
         if page.status is not None and page.status >= 400:
             issues.append("http-error")
         if not page.title:
