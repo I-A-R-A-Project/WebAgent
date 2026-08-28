@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field, asdict
 from hashlib import sha256
 import json
+import posixpath
+import re
 from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.parse import urljoin
@@ -37,6 +39,24 @@ class DownloadEntry:
 class DownloadResult:
     entries: list[DownloadEntry] = field(default_factory=list)
     total_bytes: int = 0
+
+
+def _rewrite_html(raw: bytes, base_url: str, local_path: Path, url_map: dict[str, Path]) -> bytes:
+    """Reemplaza referencias descargadas por rutas relativas del archivo local."""
+    text = raw.decode("utf-8", errors="replace")
+    base_dir = local_path.parent
+
+    def replace(match):
+        prefix, value, suffix = match.groups()
+        absolute = urljoin(base_url, value)
+        target = url_map.get(absolute)
+        if target is None:
+            return match.group(0)
+        relative = posixpath.relpath(target.as_posix(), base_dir.as_posix() or ".")
+        return f"{prefix}{relative}{suffix}"
+
+    pattern = re.compile(r'((?:href|src)\s*=\s*["\'])([^"\']+)(["\'])', re.IGNORECASE)
+    return pattern.sub(replace, text).encode("utf-8")
 
 
 class _ResourceParser(HTMLParser):
@@ -81,6 +101,7 @@ def download_site(
     config.output_dir.mkdir(parents=True, exist_ok=True)
     queue = list(dict.fromkeys(urls[:config.max_pages]))
     seen = set()
+    downloaded: dict[str, tuple[DownloadEntry, bytes]] = {}
     while queue and len(seen) < config.max_pages:
         url = queue.pop(0)
         if url in seen:
@@ -95,7 +116,13 @@ def download_site(
                     entry.error = "max-bytes-exceeded"
                     result.entries.append(entry)
                     break
-                raw = response.read(min(2_000_000, remaining))
+                raw = response.read(remaining + 1)
+                if len(raw) > remaining:
+                    entry.error = "max-bytes-exceeded"
+                    result.entries.append(entry)
+                    if on_entry:
+                        on_entry(entry)
+                    break
                 entry.status = response.status
                 entry.content_type = response.headers.get_content_type()
             target = _safe_path(url, config.output_dir)
@@ -105,6 +132,7 @@ def download_site(
             entry.bytes = len(raw)
             entry.sha256 = sha256(raw).hexdigest()
             result.total_bytes += len(raw)
+            downloaded[url] = (entry, raw)
             if include_resources and entry.content_type == "text/html":
                 parser = _ResourceParser()
                 parser.feed(raw.decode("utf-8", errors="replace"))
@@ -118,6 +146,19 @@ def download_site(
         result.entries.append(entry)
         if on_entry:
             on_entry(entry)
+    url_map = {
+        url: config.output_dir / entry.local_path
+        for url, (entry, _) in downloaded.items()
+    }
+    for url, (entry, raw) in downloaded.items():
+        if entry.content_type != "text/html":
+            continue
+        target = config.output_dir / entry.local_path
+        rewritten = _rewrite_html(raw, url, target, url_map)
+        if rewritten != raw:
+            target.write_bytes(rewritten)
+            entry.bytes = len(rewritten)
+            entry.sha256 = sha256(rewritten).hexdigest()
     manifest = config.output_dir / "website-manifest.json"
     manifest.write_text(json.dumps(asdict(result), ensure_ascii=False, indent=2), encoding="utf-8")
     return result

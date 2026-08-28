@@ -168,6 +168,15 @@ class WebsiteToolsDialog(QDialog):
             output_dir = self.output_dir_edit.text().strip()
         if not output_dir:
             return
+        answer = QMessageBox.question(
+            self,
+            "Confirmar descarga",
+            f"Se descargarán hasta {self.pages_spin.value()} archivos en:\n{output_dir}\n\n¿Continuar?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
         self.run_btn.setEnabled(False)
         self.save_btn.setEnabled(False)
         self.output.setPlainText("Descargando páginas y recursos...")
