@@ -18,12 +18,14 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--format", choices=("json", "jsonl", "csv", "sqlite"), default="json")
     parser.add_argument("--insecure-tls", action="store_true")
+    parser.add_argument("--max-pages", type=int, help="Máximo de páginas de paginación")
     args = parser.parse_args()
     crawl = load_crawl(args.crawl_json)
     result = scrape_urls(
         [page.url for page in crawl.pages],
         load_rule(args.rule),
         verify_tls=not args.insecure_tls,
+        max_pages=args.max_pages,
     )
     save_rows(result, args.output, args.format)
     print(f"Filas extraídas: {len(result.rows)}")

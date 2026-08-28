@@ -20,6 +20,8 @@ class ScrapeField:
 class ScrapeRule:
     item_selector: str
     fields: dict[str, ScrapeField]
+    next_selector: str = ""
+    max_pages: int = 1
 
 
 @dataclass
@@ -37,7 +39,10 @@ class _Element:
 
     @property
     def text(self):
-        return " ".join("".join(self.text_parts).split())
+        parts = list(self.text_parts)
+        for child in self.children:
+            parts.append(child.text)
+        return " ".join(" ".join(parts).split())
 
 
 class _TreeParser(HTMLParser):
@@ -124,18 +129,46 @@ def load_rule(path: str | Path) -> ScrapeRule:
         name: ScrapeField(**value)
         for name, value in data.get("fields", {}).items()
     }
-    return ScrapeRule(item_selector=data["item_selector"], fields=fields)
+    return ScrapeRule(
+        item_selector=data["item_selector"],
+        fields=fields,
+        next_selector=data.get("next_selector", ""),
+        max_pages=max(1, int(data.get("max_pages", 1))),
+    )
 
 
-def scrape_urls(urls: list[str], rule: ScrapeRule, *, timeout=15.0, verify_tls=True) -> ScrapeResult:
+def scrape_urls(
+    urls: list[str],
+    rule: ScrapeRule,
+    *,
+    timeout=15.0,
+    verify_tls=True,
+    max_pages: int | None = None,
+) -> ScrapeResult:
     result = ScrapeResult()
     context = ssl.create_default_context() if verify_tls else ssl._create_unverified_context()
-    for url in urls:
+    pending = list(urls)
+    visited = set()
+    page_limit = max(1, max_pages if max_pages is not None else rule.max_pages)
+    while pending and len(visited) < page_limit:
+        url = pending.pop(0)
+        if url in visited:
+            continue
+        visited.add(url)
         try:
             request = Request(url, headers={"User-Agent": "IA-Browser-WebsiteTools/1.0"})
             with urlopen(request, timeout=timeout, context=context) as response:
                 html = response.read(2_000_000).decode("utf-8", errors="replace")
             result.rows.extend(scrape_html(html, rule))
+            if rule.next_selector:
+                parser = _TreeParser()
+                parser.feed(html)
+                next_nodes = _find(parser.root, rule.next_selector)
+                if next_nodes:
+                    next_url = next_nodes[0].attrs.get("href", "")
+                    if next_url:
+                        from urllib.parse import urljoin
+                        pending.append(urljoin(url, next_url))
         except OSError as exc:
             result.errors.append(f"{url}: {exc}")
     return result

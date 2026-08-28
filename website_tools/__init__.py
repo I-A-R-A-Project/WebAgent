@@ -4,9 +4,11 @@ from .crawler import CrawlConfig, CrawlResult, crawl
 from .analyzer import SiteReport, analyze
 from .downloader import DownloadConfig, DownloadResult, download_site
 from .scraper import ScrapeRule, ScrapeResult, scrape_html
+from .compare import compare_crawls
 
 __all__ = [
     "CrawlConfig", "CrawlResult", "crawl", "SiteReport", "analyze",
     "DownloadConfig", "DownloadResult", "download_site",
     "ScrapeRule", "ScrapeResult", "scrape_html",
+    "compare_crawls",
 ]

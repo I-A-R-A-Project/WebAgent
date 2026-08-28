@@ -32,9 +32,10 @@
    - [x] Usar carpeta temporal y mover resultados a la carpeta final tras confirmar.
 2. **Completar Scraper MVP**
    - [x] Exportar JSON, JSONL, CSV y SQLite.
-   - Reglas CSS/XPath en JSON/YAML.
-   - Extraer texto, atributos, enlaces, imágenes y tablas.
-   - Paginación y exportación CSV/JSON/JSONL/SQLite.
+   - [x] Extraer texto, atributos y contenido anidado para enlaces, imágenes y tablas.
+   - [x] Paginación limitada mediante `next_selector`.
+   - [x] Exportación CSV/JSON/JSONL/SQLite.
+   - [ ] XPath en JSON/YAML (requiere motor opcional).
 3. **Contenido dinámico**
    - Usar QWebEngine solo cuando el sitio requiera JavaScript.
    - Esperar selectores, scroll y paginación controlada.
@@ -43,7 +44,7 @@
    - Generar y probar selectores antes de ejecutar un trabajo.
 5. **IA y comparación**
    - Enviar informes compactos a Copilot/AnyAPI.
-   - Comparar dos crawls y generar tareas o documentación.
+   - [x] Comparar dos crawls y exportar diferencias.
 
 ## Reglas de seguridad
 

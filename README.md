@@ -213,6 +213,12 @@ python scripts/website_download.py crawl.json --output sitio-descargado --max-pa
 
 El Scraper MVP acepta una regla JSON con selector de elementos y campos de
 texto o atributos, y puede exportar JSON, JSONL, CSV o SQLite.
+Las reglas pueden incluir `next_selector` y `max_pages` para seguir una
+paginación limitada. Para comparar ejecuciones:
+
+```bash
+python scripts/website_compare.py crawl-before.json crawl-after.json --output comparison.json
+```
 
 La implementación se probó con sitios de práctica públicos como Books to
 Scrape, Quotes to Scrape y Scrapethissite, usando límites pequeños y
