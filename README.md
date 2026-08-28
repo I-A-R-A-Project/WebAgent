@@ -159,10 +159,22 @@ IA/
 ├── collections_manager.py  # Colecciones y marcadores multi-perfil
 ├── downloads.py            # Descargas, reemplazo y extracción
 ├── ai_manager.py           # Terminal integrada y gestión de agentes
+├── website_tools/          # Crawling y extracción web controlada
 ├── web_engine.py           # Popups OAuth y vistas locales
 ├── file_ops.py             # Git, ramas y operaciones de archivos
 └── requirements.txt        # Dependencias Python
 ```
+
+### Website Tools
+
+La primera fase incluye un crawler HTTP acotado y reutilizable:
+
+```bash
+python scripts/website_crawl.py https://example.com --output crawl.json --max-depth 2 --max-pages 100
+```
+
+Por defecto limita profundidad y cantidad de páginas, sigue solo enlaces
+HTTP/HTTPS del dominio permitido y exporta resultados compactos en JSON.
 
 ## Datos persistentes
 

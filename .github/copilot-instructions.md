@@ -79,6 +79,7 @@ Collections link multiple profiles to a single workspace with optional Git versi
 - `scripts/refactor_rust.py`: wrapper to run cargo fmt and cargo fix (Rust)
 - `scripts/refactor_comby.py`: wrapper to run comby structural search/replace for multiple languages
 - `scripts/refactor_ast_grep.py`: AST-based structural search/rewrite with ast-grep
+- `scripts/website_crawl.py`: bounded HTTP crawler with compact JSON output
 - `scripts/toggle_autorun.py`: toggle per-folder autorun settings (edits ~/.ia_browser/codex_config.json)
 - New `autorun` config per-folder: `{ "autorun": { "enabled": false, "command": "" } }` — if enabled, the configured command runs automatically after an agent completes. The AIAgents dialog runs the command, streams its output to the "Salida" panel, and shows a warning if the autorun exits with a non-zero code.
 
@@ -123,6 +124,13 @@ Collections link multiple profiles to a single workspace with optional Git versi
   through the AI Manager UI
 - `ast-grep` or `sg`: optional AST-based search and rewriting
 - `uv`: optional, only needed to run the ast-grep MCP server
+
+### Website tools
+
+`website_tools` contains the first phase of the planned downloader, analyzer,
+and scraper system. Use `scripts/website_crawl.py` for bounded, domain-scoped
+HTML crawling and compact JSON results. Keep timeouts, page limits, domain
+restrictions, and credential isolation enabled by default.
 
 ### ast-grep y MCP
 
