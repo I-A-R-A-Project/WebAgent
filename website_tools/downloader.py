@@ -69,7 +69,13 @@ def _safe_path(url: str, output_dir: Path) -> Path:
     return candidate
 
 
-def download_site(config: DownloadConfig, urls: list[str], *, include_resources: bool = True) -> DownloadResult:
+def download_site(
+    config: DownloadConfig,
+    urls: list[str],
+    *,
+    include_resources: bool = True,
+    on_entry=None,
+) -> DownloadResult:
     result = DownloadResult()
     context = ssl.create_default_context() if config.verify_tls else ssl._create_unverified_context()
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -110,6 +116,8 @@ def download_site(config: DownloadConfig, urls: list[str], *, include_resources:
         except (OSError, ValueError) as exc:
             entry.error = str(exc)
         result.entries.append(entry)
+        if on_entry:
+            on_entry(entry)
     manifest = config.output_dir / "website-manifest.json"
     manifest.write_text(json.dumps(asdict(result), ensure_ascii=False, indent=2), encoding="utf-8")
     return result

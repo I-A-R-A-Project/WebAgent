@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
 
 from .analyzer import analyze
 from .crawler import CrawlConfig, CrawlResult, crawl
+from .downloader import DownloadConfig, DownloadResult, download_site
 
 
 class _CrawlWorker(QObject):
@@ -28,6 +29,24 @@ class _CrawlWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class _DownloadWorker(QObject):
+    finished = pyqtSignal(object)
+    failed = pyqtSignal(str)
+    progress = pyqtSignal(object)
+
+    def __init__(self, config, urls):
+        super().__init__()
+        self.config = config
+        self.urls = urls
+
+    def run(self):
+        try:
+            result = download_site(self.config, self.urls, on_entry=self.progress.emit)
+            self.finished.emit(result)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class WebsiteToolsDialog(QDialog):
     """Permite introducir una URL y ejecutar crawl o análisis desde la UI."""
 
@@ -38,6 +57,7 @@ class WebsiteToolsDialog(QDialog):
         self.thread = None
         self.worker = None
         self.last_result: CrawlResult | None = None
+        self.last_download: DownloadResult | None = None
         self.pages_processed = 0
         self._build_ui(initial_url)
 
@@ -50,6 +70,7 @@ class WebsiteToolsDialog(QDialog):
         self.tool_combo = QComboBox()
         self.tool_combo.addItem("Crawl + analizar", "crawl")
         self.tool_combo.addItem("Analizar último crawl", "analyze")
+        self.tool_combo.addItem("Descargar último crawl", "download")
         form.addRow("Herramienta:", self.tool_combo)
         self.depth_spin = QSpinBox()
         self.depth_spin.setRange(0, 10)
@@ -59,6 +80,14 @@ class WebsiteToolsDialog(QDialog):
         self.pages_spin.setRange(1, 10000)
         self.pages_spin.setValue(25)
         form.addRow("Máximo de páginas:", self.pages_spin)
+        output_row = QHBoxLayout()
+        self.output_dir_edit = QLineEdit()
+        self.output_dir_edit.setPlaceholderText("Carpeta destino para descargar")
+        output_row.addWidget(self.output_dir_edit, 1)
+        browse_btn = QPushButton("Elegir...")
+        browse_btn.clicked.connect(self._choose_output_dir)
+        output_row.addWidget(browse_btn)
+        form.addRow("Destino:", output_row)
         self.pages_status = QLabel("Páginas: 0 / 0")
         self.depth_status = QLabel("Profundidad: - / 0")
         status_row = QHBoxLayout()
@@ -85,6 +114,9 @@ class WebsiteToolsDialog(QDialog):
         layout.addWidget(self.output, 1)
 
     def _run(self):
+        if self.tool_combo.currentData() == "download":
+            self._run_download()
+            return
         if self.tool_combo.currentData() == "analyze":
             if self.last_result is None:
                 QMessageBox.information(self, "Website Tools", "Todavía no hay un crawl para analizar.")
@@ -119,6 +151,64 @@ class WebsiteToolsDialog(QDialog):
         self.worker.failed.connect(self.thread.quit)
         self.thread.finished.connect(self._clear_worker)
         self.thread.start()
+
+    def _choose_output_dir(self):
+        from PyQt6.QtWidgets import QFileDialog
+        path = QFileDialog.getExistingDirectory(self, "Elegir carpeta destino")
+        if path:
+            self.output_dir_edit.setText(path)
+
+    def _run_download(self):
+        if self.last_result is None or not self.last_result.pages:
+            QMessageBox.information(self, "Website Tools", "Ejecutá primero un crawl.")
+            return
+        output_dir = self.output_dir_edit.text().strip()
+        if not output_dir:
+            self._choose_output_dir()
+            output_dir = self.output_dir_edit.text().strip()
+        if not output_dir:
+            return
+        self.run_btn.setEnabled(False)
+        self.save_btn.setEnabled(False)
+        self.output.setPlainText("Descargando páginas y recursos...")
+        self.pages_processed = 0
+        urls = [page.url for page in self.last_result.pages]
+        config = DownloadConfig(
+            start_url=urls[0],
+            output_dir=Path(output_dir),
+            max_pages=self.pages_spin.value(),
+            verify_tls=not self.insecure_tls.isChecked(),
+        )
+        self.thread = QThread(self)
+        self.worker = _DownloadWorker(config, urls)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(self._on_download_progress)
+        self.worker.finished.connect(self._on_download_finished)
+        self.worker.failed.connect(self._on_failed)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.failed.connect(self.thread.quit)
+        self.thread.finished.connect(self._clear_worker)
+        self.thread.start()
+
+    def _on_download_progress(self, entry):
+        self.pages_processed += 1
+        status = str(entry.status) if entry.status is not None else "error"
+        detail = entry.error or f"{entry.bytes} bytes"
+        self.output.append(f"[{status}] {entry.url} — {detail}")
+        self.pages_status.setText(f"Archivos: {self.pages_processed} / {self.pages_spin.value()}")
+        self.depth_status.setText("Profundidad: —")
+
+    def _on_download_finished(self, result):
+        self.last_download = result
+        self.output.append(
+            f"\nCompletado: {len(result.entries)} archivos, "
+            f"{result.total_bytes} bytes\nManifest: "
+            f"{Path(result.entries[0].local_path).parent if result.entries and result.entries[0].local_path else '(ver carpeta destino)'}"
+        )
+        self.pages_status.setText(f"Archivos: {len(result.entries)} / {self.pages_spin.value()}")
+        self.run_btn.setEnabled(True)
+        self.save_btn.setEnabled(False)
 
     def _on_progress(self, page):
         status = str(page.status) if page.status is not None else "error"
