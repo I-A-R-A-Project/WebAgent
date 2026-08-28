@@ -34,9 +34,8 @@ from profiles import ProfileManager
 # ======================================================================
 
 class CollectionManager:
-    """Maneja "Colecciones": grupos de marcadores (chats/urls) que pueden
-    pertenecer a distintos perfiles, cada Colección con su propia carpeta
-    de descarga opcional."""
+    """Maneja "Colecciones": grupos de marcadores que pueden pertenecer a distintos
+    perfiles, cada Colección con su propia carpeta de descarga opcional."""
 
     def __init__(self):
         self.base_dir = Path.home() / ".ia_browser"
