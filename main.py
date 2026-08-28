@@ -48,6 +48,7 @@ from web_common.video_tab import VideoTab
 from web_common import folder_viewer
 from web_common.web_profiles import build_web_profile
 from ai_manager import AIAgentsDialog
+from website_tools.dialogs import WebsiteToolsDialog
 
 
 class IABrowser(QMainWindow):
@@ -614,6 +615,11 @@ class IABrowser(QMainWindow):
 
         view_menu = menubar.addMenu("&Vista")
 
+        website_action = QAction("🌐 Website Tools...", self)
+        website_action.setToolTip("Crawlear y analizar una URL")
+        website_action.triggered.connect(self._open_website_tools)
+        view_menu.addAction(website_action)
+
         zoom_in = QAction("Aumentar zoom", self)
         zoom_in.setShortcut(QKeySequence.StandardKey.ZoomIn)
         zoom_in.triggered.connect(self._zoom_in)
@@ -628,6 +634,15 @@ class IABrowser(QMainWindow):
         reset_zoom.setShortcut("Ctrl+0")
         reset_zoom.triggered.connect(self._reset_zoom)
         view_menu.addAction(reset_zoom)
+
+    def _open_website_tools(self):
+        webview = self.current_webview()
+        initial_url = webview.url().toString() if webview else ""
+        dialog = WebsiteToolsDialog(self, initial_url=initial_url)
+        self._website_tools_dialogs = getattr(self, "_website_tools_dialogs", [])
+        self._website_tools_dialogs.append(dialog)
+        dialog.finished.connect(lambda: self._website_tools_dialogs.remove(dialog) if dialog in self._website_tools_dialogs else None)
+        dialog.show()
 
     # ------------------------------------------------------------------
     # Navigation helpers

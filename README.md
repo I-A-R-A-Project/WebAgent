@@ -187,6 +187,22 @@ Detecta errores HTTP, errores de solicitud, títulos ausentes o duplicados,
 meta descripciones ausentes, páginas sin encabezados y enlaces hacia páginas
 con error.
 
+Para probarlo sin depender de Internet, iniciá el sitio interno:
+
+```bash
+python scripts/website_tools_test_server.py
+python scripts/website_crawl.py http://127.0.0.1:8765/ --output test-crawl.json --max-depth 1 --max-pages 10
+python scripts/website_analyze.py test-crawl.json --output test-report.json
+```
+
+La URL interna es `http://127.0.0.1:8765/`. Incluye páginas enlazadas,
+títulos duplicados, una meta descripción ausente y un enlace roto.
+
+También podés abrir **Vista → Website Tools...** desde la interfaz. El diálogo
+precompleta la URL de la pestaña actual, permite elegir el tipo de operación,
+limitar profundidad y páginas, muestra el informe dentro de IA Browser y
+permite guardar el crawl en JSON.
+
 ## Datos persistentes
 
 IA Browser guarda datos en `~/.ia_browser/`:

@@ -138,6 +138,14 @@ results for HTTP/request errors, duplicate or missing titles, missing meta
 descriptions/headings, and links to failed pages without downloading content
 again.
 
+For local testing, run `python scripts/website_tools_test_server.py` and use
+`http://127.0.0.1:8765/`. The fixture contains internal links, a duplicate
+title, a missing description, and a broken link.
+
+The same flow is available in the GUI under **View -> Website Tools...**. It
+prefills the current tab URL and runs the bounded crawl in a worker thread so
+the browser UI remains responsive.
+
 ### ast-grep y MCP
 
 Usa `scripts/refactor_ast_grep.py` para búsquedas y refactors estructurales
