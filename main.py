@@ -36,6 +36,7 @@ from web_common.session import (
     is_navigation_title,
     load_tab_session,
     restore_tab_metadata,
+    SessionAutoSaver,
     save_tab_session,
 )
 from web_common.sidebar import AppPanelOverlay, SidebarContainer, SidebarRail
@@ -45,7 +46,7 @@ from web_common.media_tabs import open_video_tab as add_video_tab
 from web_common.video_tab import VideoTab
 from web_common import folder_viewer
 from web_common.web_profiles import build_web_profile
-from codex_manager import AIAgentsDialog
+from ai_manager import AIAgentsDialog
 
 
 class IABrowser(QMainWindow):
@@ -63,6 +64,7 @@ class IABrowser(QMainWindow):
         self.web_engine_profiles: dict[str, QWebEngineProfile] = {}
         self.current_profile_id = self.profile_manager.profiles[0]["id"]
         self.session_file = self.profile_manager.base_dir / "session.json"
+        self.session_autosaver = SessionAutoSaver(self._save_session)
 
         # Metadata por pestaña: id(webview) -> {"profile_id":.., "collection_id": .. or None}
         self.tab_data: dict[int, dict] = {}
@@ -458,6 +460,7 @@ class IABrowser(QMainWindow):
         insert_at = self.tabs.indexOf(self.plus_widget)
         tab_index = self.tabs.insertTab(insert_at, webview, "Nueva pestaña")
         self.tabs.setCurrentIndex(tab_index)
+        self.session_autosaver.schedule()
         return webview
 
     def _handle_new_tab_request(self):
@@ -532,6 +535,7 @@ class IABrowser(QMainWindow):
 
         if self.tabs.count() <= 1:
             self._open_new_default_tab()
+        self.session_autosaver.schedule()
 
     def current_webview(self) -> QWebEngineView | None:
         """Return active web tab, never the '+' placeholder widget."""
@@ -841,13 +845,13 @@ class IABrowser(QMainWindow):
         elif action == change_folder_action:
             self._change_profile_folder(profile_id)
         elif action == codex_action:
-            self._open_codex_manager(data["files_dir"])
+            self._open_ai_manager(data["files_dir"])
         elif action == git_action:
             self._toggle_profile_git(profile_id)
         elif action == delete_action:
             self._delete_profile(profile_id)
 
-    def _open_codex_manager(self, folder: str):
+    def _open_ai_manager(self, folder: str):
         Path(folder).mkdir(parents=True, exist_ok=True)
         dialog = AIAgentsDialog(
             self,
@@ -1254,7 +1258,7 @@ class IABrowser(QMainWindow):
             elif action == folder_action:
                 self._pick_collection_folder(collection_id)
             elif action == codex_action:
-                self._open_codex_manager(collection["download_dir"])
+                self._open_ai_manager(collection["download_dir"])
             elif action == git_action:
                 self._toggle_collection_git(collection_id)
             elif action == delete_action:

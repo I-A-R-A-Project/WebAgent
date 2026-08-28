@@ -14,6 +14,7 @@ sus propias sesiones, archivos, cookies, credenciales de agentes y ramas Git.
 - Descargar, extraer, editar y versionar archivos desde el navegador.
 - Ejecutar Codex y Copilot CLI sobre un repositorio sin abrir una consola
   separada.
+- Ejecutar refactors estructurales con ast-grep sin consumir tokens del agente.
 - Revisar el historial y los diffs Git antes de continuar una tarea.
 - Trabajar con Colecciones que reúnen páginas y carpetas de varios perfiles.
 
@@ -109,6 +110,35 @@ Copilot CLI corre dentro de IA Browser mediante una terminal integrada.
 La separación de credenciales depende del almacenamiento usado por Copilot CLI.
 IA Browser no guarda tokens propios ni copia credenciales entre perfiles.
 
+### AnyAPI
+
+AnyAPI ofrece acceso unificado a modelos de OpenAI, Anthropic, Google, Meta y
+otros mediante `https://api.anyapi.ai/v1`. El agente AnyAPI aparece en
+**Agentes IA** como proveedor opcional: requiere una API key y consulta
+`chat/completions`; no modifica archivos por sí mismo.
+
+Documentación: https://docs.anyapi.ai/
+
+### Refactors estructurales
+
+El script `scripts/refactor_ast_grep.py` permite buscar y reemplazar por
+estructura sintáctica, en lugar de depender de regex:
+
+```bash
+python scripts/refactor_ast_grep.py . --pattern "console.log($$$ARGS)" --lang ts
+python scripts/refactor_ast_grep.py . --pattern "var $A = $B" --rewrite "let $A = $B" --lang js --dry-run
+```
+
+Instalación opcional:
+
+```bash
+npm install --global @ast-grep/cli
+```
+
+El servidor `ast-grep-mcp` también puede configurarse en un cliente MCP para
+que un agente visualice AST y pruebe reglas estructurales. IA Browser no lo
+inicia automáticamente.
+
 ## Instalación y ejecución
 
 Requiere Python, PyQt6 y PyQt6-WebEngine:
@@ -128,7 +158,7 @@ IA/
 ├── profiles.py             # Perfiles aislados y carpetas de trabajo
 ├── collections_manager.py  # Colecciones y marcadores multi-perfil
 ├── downloads.py            # Descargas, reemplazo y extracción
-├── codex_manager.py        # Terminal integrada y gestión de agentes
+├── ai_manager.py           # Terminal integrada y gestión de agentes
 ├── web_engine.py           # Popups OAuth y vistas locales
 ├── file_ops.py             # Git, ramas y operaciones de archivos
 └── requirements.txt        # Dependencias Python

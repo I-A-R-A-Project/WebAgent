@@ -1,5 +1,5 @@
 """
-codex_manager.py - "Agentes IA" para IA Browser.
+ai_manager.py - "Agentes IA" para IA Browser.
 
 Le permite, para cualquier carpeta versionada con git (perfil o
 Colección), desde un diálogo con pestañas:
@@ -37,7 +37,7 @@ from file_ops import GitVersioning
 
 
 # ======================================================================
-# Definición de los 3 agentes: comando por defecto, prompt, requisitos
+# Definición de los agentes: comando por defecto, prompt, requisitos
 # ======================================================================
 
 CODEX_PROMPT_TEMPLATE = """Estás parado en un repositorio git, en la rama '{target_branch}'.
@@ -100,10 +100,21 @@ AGENT_DEFS = {
         "check_binary": "copilot",
         "install_hint": "requiere GitHub Copilot CLI (docs.github.com/copilot) y un plan de Copilot activo",
     },
+    "anyapi": {
+        "label": "🌐 AnyAPI — Modelos unificados",
+        "short_label": "AnyAPI",
+        "description": "Consulta modelos de OpenAI, Anthropic, Google, Meta y otros mediante una API unificada.",
+        "default_command": 'python "{script_dir}/scripts/anyapi_agent.py" --prompt "{prompt}"',
+        "needs_task": False,
+        "needs_source_branch": False,
+        "prompt_template": "",
+        "check_binary": "python",
+        "install_hint": "requiere Python y una API key de AnyAPI (https://docs.anyapi.ai/)",
+    },
 
 }
 
-AGENT_ORDER = ["copilot", "codex"]
+AGENT_ORDER = ["copilot", "codex", "anyapi"]
 
 # Comandos por defecto de versiones anteriores que ya no aplican (se
 # migran solos al default actual si el usuario nunca los tocó a mano).
@@ -289,14 +300,20 @@ class AIAgentsDialog(QDialog):
  
         self._refresh_repo_status()
 
-    def _copilot_environment(self):
+    def _agent_environment(self, agent_id: str):
         self.copilot_home.mkdir(parents=True, exist_ok=True)
         environment = QProcessEnvironment.systemEnvironment()
-        for name in ("COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
+        for name in ("COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "ANYAPI_API_KEY"):
             environment.remove(name)
         environment.insert("COPILOT_HOME", str(self.copilot_home))
         # Device flow link is opened by IA Browser, never by system browser.
         environment.insert("BROWSER", "cmd.exe /c exit 0")
+        token = self.config_store.get(self.folder).get("agents", {}).get(agent_id, {}).get("auth_token", "")
+        if token:
+            if agent_id == "copilot":
+                environment.insert("COPILOT_GITHUB_TOKEN", token)
+            elif agent_id == "anyapi":
+                environment.insert("ANYAPI_API_KEY", token)
         return environment
 
     def _open_copilot_auth_url(self, text):
@@ -502,40 +519,57 @@ class AIAgentsDialog(QDialog):
         tab_layout.addWidget(prompt_edit, 1)
 
         btn_row = QHBoxLayout()
-        regen_btn = QPushButton("🔄 Regenerar desde plantilla")
+        # For Copilot, do not show a regenerate-from-template button; prompt should be left empty by default
+        if agent_id != "copilot":
+            regen_btn = QPushButton("🔄 Regenerar desde plantilla")
+        else:
+            regen_btn = None
         run_btn = QPushButton(f"▶ Ejecutar {defn['short_label']}")
         preview_btn = QPushButton(f"👁️ Previsualizar {defn['short_label']}")
         stop_btn = QPushButton("⏹ Detener")
         stop_btn.setEnabled(False)
-        btn_row.addWidget(regen_btn)
+        if regen_btn is not None:
+            btn_row.addWidget(regen_btn)
         btn_row.addWidget(run_btn)
         btn_row.addWidget(preview_btn)
         btn_row.addWidget(stop_btn)
 
-        if agent_id == "copilot":
-            # checkbox to control using template when regenerating
-            use_template_cb = QCheckBox("Usar plantilla al regenerar")
-            use_template_cb.setChecked(False)
-            btn_row.addWidget(use_template_cb)
-            add_template_btn = QPushButton("➕ Agregar plantilla a copilot-instructions.md")
-            add_template_btn.clicked.connect(lambda: self._add_template_to_instructions())
-            btn_row.addWidget(add_template_btn)
-            login_btn = QPushButton("🔐 Iniciar sesión en este perfil")
-            login_btn.clicked.connect(self._start_copilot_login)
-            btn_row.addWidget(login_btn)
+        if agent_id in ("copilot", "anyapi"):
+            token_edit = QLineEdit(agent_cfg.get("auth_token", ""))
+            token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            token_row = QHBoxLayout()
+            token_row.addWidget(QLabel("API key:" if agent_id == "anyapi" else "PAT:"))
+            token_row.addWidget(token_edit, 1)
+            tab_layout.addLayout(token_row)
+            # Keep only the button to append the long template to copilot-instructions.md and login controls
+            if agent_id == "copilot":
+                add_template_btn = QPushButton("➕ Agregar plantilla a copilot-instructions.md")
+                add_template_btn.clicked.connect(lambda: self._add_template_to_instructions())
+                btn_row.addWidget(add_template_btn)
+                login_btn = QPushButton("🔐 Iniciar sesión en este perfil")
+                login_btn.clicked.connect(self._start_copilot_login)
+                btn_row.addWidget(login_btn)
+            else:
+                save_key_btn = QPushButton("Guardar API key")
+                save_key_btn.clicked.connect(lambda: self.config_store.set_agent_field(
+                    self.folder, agent_id, auth_token=token_edit.text().strip()
+                ))
+                btn_row.addWidget(save_key_btn)
         tab_layout.addLayout(btn_row)
 
         self.agent_widgets[agent_id] = {
             "command_edit": command_edit, "task_edit": task_edit, "prompt_edit": prompt_edit,
             "run_btn": run_btn, "stop_btn": stop_btn,
         }
+        if agent_id in ("copilot", "anyapi"):
+            self.agent_widgets[agent_id]["token_edit"] = token_edit
 
         # store copilot-specific widgets
         if agent_id == "copilot":
-            self.agent_widgets[agent_id]["use_template_cb"] = use_template_cb
             self.agent_widgets[agent_id]["add_template_btn"] = add_template_btn
 
-        regen_btn.clicked.connect(lambda: self._regenerate_prompt(agent_id))
+        if regen_btn is not None:
+            regen_btn.clicked.connect(lambda: self._regenerate_prompt(agent_id))
         run_btn.clicked.connect(lambda: self._run_agent(agent_id))
         stop_btn.clicked.connect(self._stop_current_agent)
 
@@ -545,21 +579,16 @@ class AIAgentsDialog(QDialog):
         self._regenerate_prompt(agent_id)
 
     def _regenerate_prompt(self, agent_id: str):
+        """Regenerate the prompt from template for agents that use templates.
+        For Copilot, keep the prompt untouched (stay empty) — template is only stored in .github/copilot-instructions.md when user requests it.
+        """
+        if agent_id == "copilot":
+            # Intentionally leave Copilot prompt empty and do not auto-fill from template
+            return
+
         defn = AGENT_DEFS[agent_id]
         cfg = self.config_store.get(self.folder)
         widgets = self.agent_widgets[agent_id]
-
-        # For Copilot: only inject the template if the "use_template" checkbox is checked
-        if agent_id == "copilot":
-            use_template = widgets.get("use_template_cb")
-            if use_template and not use_template.isChecked():
-                # If the prompt box is empty, populate it once; otherwise leave user edits intact
-                if not widgets["prompt_edit"].toPlainText().strip():
-                    prompt = defn["prompt_template"].format(
-                        source_branch=cfg["source_branch"], target_branch=cfg["target_branch"]
-                    )
-                    widgets["prompt_edit"].setPlainText(prompt)
-                return
 
         if defn["needs_task"]:
             task = widgets["task_edit"].toPlainText().strip() or "(completá la descripción de la tarea arriba)"
@@ -742,8 +771,8 @@ class AIAgentsDialog(QDialog):
         # ya armado con comillas), para que Qt aplique su propio
         # escapado una sola vez por argumento, evitando el anidamiento
         # de comillas que rompía el prompt antes.
-        if agent_id == "copilot":
-            self.process.setProcessEnvironment(self._copilot_environment())
+        if agent_id in ("copilot", "anyapi"):
+            self.process.setProcessEnvironment(self._agent_environment(agent_id))
 
         # If preview mode, ensure we run on the preview branch (already checked out)
         if preview:
@@ -783,7 +812,7 @@ class AIAgentsDialog(QDialog):
         self._append_log(f"\n=== Autenticando Copilot ({self.profile_id}) ===\n")
         self.process = QProcess(self)
         self.process.setWorkingDirectory(self.folder)
-        self.process.setProcessEnvironment(self._copilot_environment())
+        self.process.setProcessEnvironment(self._agent_environment("copilot"))
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.process.readyReadStandardOutput.connect(self._on_process_output)
         self.process.finished.connect(self._on_process_finished)
@@ -800,11 +829,14 @@ class AIAgentsDialog(QDialog):
         línea manualmente al pasarlo al proceso."""
         tokens = shlex.split(command_template)
         argv = []
+        script_dir = str(Path(__file__).resolve().parent)
         for tok in tokens:
             if tok == "{prompt}":
                 argv.append(prompt)
             elif "{prompt}" in tok:
                 argv.append(tok.replace("{prompt}", prompt))
+            elif "{script_dir}" in tok:
+                argv.append(tok.replace("{script_dir}", script_dir))
             else:
                 argv.append(tok)
         return argv

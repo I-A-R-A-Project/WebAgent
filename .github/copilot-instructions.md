@@ -8,7 +8,7 @@ IA Browser is a desktop web browser built with PyQt6 that manages isolated brows
 - **main.py**: QMainWindow with tabbed interface, profile/collection management, menu system
 - **Profiles**: Isolated browser instances with separate storage, cache, home URLs, and zoom levels
 - **Collections**: Bookmarks/URLs with optional download folders and Git integration
-- **Agents**: Copilot CLI and Codex integration via `codex_manager.py` for documentation/history reorganization
+- **Agents**: Copilot CLI, Codex, and AnyAPI integration via `ai_manager.py`
 - **Git Versioning**: Downloads can be version-controlled instead of numbered duplicates
 - **web_common** (sibling directory): Shared UI components (tabs, navbars, sidebars, web profiles)
 
@@ -78,11 +78,12 @@ Collections link multiple profiles to a single workspace with optional Git versi
 - `scripts/refactor_prettier.py`: wrapper to run prettier (JS/TS/HTML/CSS)
 - `scripts/refactor_rust.py`: wrapper to run cargo fmt and cargo fix (Rust)
 - `scripts/refactor_comby.py`: wrapper to run comby structural search/replace for multiple languages
+- `scripts/refactor_ast_grep.py`: AST-based structural search/rewrite with ast-grep
 - `scripts/toggle_autorun.py`: toggle per-folder autorun settings (edits ~/.ia_browser/codex_config.json)
 - New `autorun` config per-folder: `{ "autorun": { "enabled": false, "command": "" } }` — if enabled, the configured command runs automatically after an agent completes. The AIAgents dialog runs the command, streams its output to the "Salida" panel, and shows a warning if the autorun exits with a non-zero code.
 
 ### Adding Agent Functionality
-- Edit `codex_manager.py` to modify agent prompts or commands
+- Edit `ai_manager.py` to modify agent prompts or commands
 - Prompts are templates with `{target_branch}` and `{source_branch}` placeholders
 - Both agents check GitVersioning availability before running
 - Agents require a repo initialized in the target folder
@@ -118,6 +119,40 @@ Collections link multiple profiles to a single workspace with optional Git versi
 **External tools** (optional, checked at runtime):
 - `git`: For versioning downloads and agent operations
 - `codex`, `copilot`: CLI tools for agent integration
+- AnyAPI: unified REST API provider, configured with an `ANYAPI_API_KEY`
+  through the AI Manager UI
+- `ast-grep` or `sg`: optional AST-based search and rewriting
+- `uv`: optional, only needed to run the ast-grep MCP server
+
+### ast-grep y MCP
+
+Usa `scripts/refactor_ast_grep.py` para búsquedas y refactors estructurales
+compactos, sin enviar cada archivo coincidente al agente:
+
+```bash
+python scripts/refactor_ast_grep.py . --pattern "console.log($$$ARGS)" --lang ts
+python scripts/refactor_ast_grep.py . --pattern "var $A = $B" --rewrite "let $A = $B" --lang js --dry-run
+```
+
+Instalación del CLI (opcional):
+
+```bash
+npm install --global @ast-grep/cli
+```
+
+El servidor `ast-grep-mcp` es opcional y se configura en el cliente MCP. Ofrece
+visualización del AST, prueba de reglas YAML y búsquedas estructurales para
+agentes compatibles. No se inicia automáticamente desde IA Browser.
+
+Referencias:
+
+- https://github.com/ast-grep/ast-grep
+- https://github.com/ast-grep/ast-grep-mcp
+- https://ast-grep.github.io/advanced/prompting
+
+AnyAPI documentation:
+
+- https://docs.anyapi.ai/
 
 ## Important Warnings
 
