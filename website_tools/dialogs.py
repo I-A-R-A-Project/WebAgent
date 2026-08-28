@@ -80,6 +80,11 @@ class WebsiteToolsDialog(QDialog):
         self.pages_spin.setRange(1, 10000)
         self.pages_spin.setValue(25)
         form.addRow("Máximo de páginas:", self.pages_spin)
+        self.workers_spin = QSpinBox()
+        self.workers_spin.setRange(1, 16)
+        self.workers_spin.setValue(1)
+        self.workers_spin.setToolTip("Se limita automáticamente al número de núcleos disponibles.")
+        form.addRow("Workers concurrentes:", self.workers_spin)
         self.allow_urls_edit = QLineEdit()
         self.allow_urls_edit.setPlaceholderText("https://example.com/*")
         form.addRow("Whitelist URLs:", self.allow_urls_edit)
@@ -151,6 +156,7 @@ class WebsiteToolsDialog(QDialog):
             max_depth=self.depth_spin.value(),
             max_pages=self.pages_spin.value(),
             verify_tls=not self.insecure_tls.isChecked(),
+            workers=self.workers_spin.value(),
             allowed_url_patterns=self._split_patterns(self.allow_urls_edit.text()),
             blocked_url_patterns=self._split_patterns(self.block_urls_edit.text()),
             allowed_content_selectors=self._split_patterns(self.allow_selectors_edit.text()),

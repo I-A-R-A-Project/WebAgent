@@ -175,6 +175,8 @@ python scripts/website_crawl.py https://example.com --output crawl.json --max-de
 
 Por defecto limita profundidad y cantidad de páginas, sigue solo enlaces
 HTTP/HTTPS del dominio permitido y exporta resultados compactos en JSON.
+Las solicitudes pueden ejecutarse con workers concurrentes mediante
+`--workers`; el valor se limita al número de núcleos disponibles y a 16.
 Se puede restringir explícitamente el alcance con patrones URL y selectores
 HTML:
 

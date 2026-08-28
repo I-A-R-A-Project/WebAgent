@@ -24,8 +24,9 @@ def main() -> int:
     parser.add_argument("--allow-selector", action="append", default=[], help="Selector CSS cuyo contenido se procesa")
     parser.add_argument("--block-selector", action="append", default=[], help="Selector CSS cuyo contenido se ignora")
     parser.add_argument("--ignore-robots", action="store_true", help="No consultar ni respetar robots.txt")
+    parser.add_argument("--workers", type=int, default=1, help="Solicitudes concurrentes (máximo 16 y limitado por CPU)")
     args = parser.parse_args()
-    if args.max_depth < 0 or args.max_pages < 1 or args.delay < 0:
+    if args.max_depth < 0 or args.max_pages < 1 or args.delay < 0 or args.workers < 1:
         parser.error("Los límites deben ser positivos; max-depth puede ser cero.")
     result = crawl(CrawlConfig(
         start_url=args.url,
@@ -38,6 +39,7 @@ def main() -> int:
         allowed_content_selectors=args.allow_selector,
         blocked_content_selectors=args.block_selector,
         respect_robots=not args.ignore_robots,
+        workers=args.workers,
     ))
     save_crawl(result, args.output)
     print(f"Páginas visitadas: {result.visited}")

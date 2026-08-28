@@ -3,6 +3,8 @@
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from html.parser import HTMLParser
+from concurrent.futures import ThreadPoolExecutor
+import os
 from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urldefrag, urljoin, urlsplit, urlunsplit
@@ -27,6 +29,7 @@ class CrawlConfig:
     allowed_content_selectors: list[str] = field(default_factory=list)
     blocked_content_selectors: list[str] = field(default_factory=list)
     respect_robots: bool = True
+    workers: int = 1
 
 
 @dataclass
@@ -178,20 +181,15 @@ def crawl(
                 robots.parse(response.read(1_000_000).decode("utf-8", errors="replace").splitlines())
         except (OSError, URLError):
             robots = None
+    else:
+        robots = None
 
-    while queue and len(result.pages) < config.max_pages:
-        if stop_requested and stop_requested():
-            result.stopped = True
-            break
-        url, depth = queue.pop(0)
+    def fetch(item):
+        url, depth = item
         page = PageResult(url=url, depth=depth)
         if robots is not None and not robots.can_fetch(config.user_agent, url):
             page.error = "blocked-by-robots.txt"
-            result.pages.append(page)
-            result.visited = len(result.pages)
-            if on_page:
-                on_page(page)
-            continue
+            return page
         try:
             request = Request(url, headers={"User-Agent": config.user_agent})
             with urlopen(request, timeout=config.timeout, context=context) as response:
@@ -204,31 +202,33 @@ def crawl(
                 page.title = " ".join("".join(parser.title_parts).split())
                 page.description = parser.description
                 page.headings = parser.headings
-                page.links = [
-                    _normalize_url(urljoin(url, href))
-                    for href in parser.links
-                    if urlsplit(_normalize_url(urljoin(url, href))).scheme in {"http", "https"}
-                ]
-                if depth < config.max_depth:
-                    for child in page.links:
-                        if (
-                            urlsplit(child).scheme in {"http", "https"}
-                            and _is_allowed(child, start_domain)
-                            and _matches_url_patterns(
-                                child,
-                                config.allowed_url_patterns,
-                                config.blocked_url_patterns,
-                            )
-                        ):
-                            if child not in queued:
-                                queued.add(child)
-                                queue.append((child, depth + 1))
+                page.links = [_normalize_url(urljoin(url, href)) for href in parser.links]
         except (HTTPError, URLError, TimeoutError, OSError) as exc:
             page.error = str(exc)
-        result.pages.append(page)
-        result.visited = len(result.pages)
-        if on_page:
-            on_page(page)
-        if config.delay:
-            time.sleep(config.delay)
+        return page
+
+    worker_count = max(1, min(config.workers, os.cpu_count() or 1, 16))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        while queue and len(result.pages) < config.max_pages:
+            if stop_requested and stop_requested():
+                result.stopped = True
+                break
+            batch = queue[:worker_count]
+            del queue[:len(batch)]
+            for page in executor.map(fetch, batch[: config.max_pages - len(result.pages)]):
+                result.pages.append(page)
+                result.visited = len(result.pages)
+                if on_page:
+                    on_page(page)
+                if page.depth < config.max_depth:
+                    for child in page.links:
+                        if (
+                            _is_allowed(child, start_domain)
+                            and _matches_url_patterns(child, config.allowed_url_patterns, config.blocked_url_patterns)
+                            and child not in queued
+                        ):
+                            queued.add(child)
+                            queue.append((child, page.depth + 1))
+            if config.delay:
+                time.sleep(config.delay)
     return result
