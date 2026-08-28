@@ -20,6 +20,15 @@ class TaskManager:
     def save(self):
         self.path.write_text(json.dumps(self.tasks, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def cancel(self, task_id: str) -> dict | None:
+        for task in self.tasks:
+            if task.get("id") == task_id and task.get("status") not in ("completed", "cancelled"):
+                task["status"] = "cancelled"
+                task["cancelled"] = datetime.now().isoformat()
+                self.save()
+                return task
+        return None
+
     def add(self, text: str, collections: list[dict]) -> dict:
         task = {
             "id": uuid.uuid4().hex[:12],

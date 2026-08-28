@@ -508,6 +508,14 @@ class IABrowser(QMainWindow):
 
     def _on_tab_url_changed(self, webview, url: QUrl):
         fragment = url.fragment()
+        if fragment.startswith("cancel:"):
+            task_id = fragment.split(":", 1)[1]
+            profile_id = self.tab_data.get(id(webview), {}).get("profile_id", self.current_profile_id)
+            manager = TaskManager(profile_id)
+            if manager.cancel(task_id):
+                webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("about:blank"))
+                self.statusBar().showMessage("Tarea cancelada", 3000)
+            return
         if fragment.startswith("copilot:"):
             task_id = fragment.split(":", 1)[1]
             profile_id = self.tab_data.get(id(webview), {}).get("profile_id", self.current_profile_id)
@@ -561,7 +569,7 @@ class IABrowser(QMainWindow):
         if webview is not self.current_webview():
             return
         self.current_url = url.toString()
-        self.address_bar.setText(self.current_url)
+        self.address_bar.setText("" if self.current_url == "about:blank" else self.current_url)
         self._refresh_collection_icon(self.current_url)
 
     def _on_tab_title_changed(self, webview, title: str):
@@ -625,7 +633,7 @@ class IABrowser(QMainWindow):
         self._highlight_active_profile()
 
         self.current_url = webview.url().toString()
-        self.address_bar.setText(self.current_url)
+        self.address_bar.setText("" if self.current_url == "about:blank" else self.current_url)
         self._refresh_collection_icon(self.current_url)
 
     def _on_address_bar_enter(self, text: str):
@@ -636,7 +644,7 @@ class IABrowser(QMainWindow):
         if webview is not self.current_webview():
             return
         self.current_url = url.toString()
-        self.address_bar.setText(self.current_url)
+        self.address_bar.setText("" if self.current_url == "about:blank" else self.current_url)
 
     def _on_title_changed(self, title: str):
         webview = self.sender()

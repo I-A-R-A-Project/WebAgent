@@ -10,7 +10,8 @@ def render_new_tab_page(tasks=None) -> str:
         f"<li><strong>{html.escape(item['text'])}</strong> "
         f"<small>{html.escape(item.get('status', 'pending'))}"
         f"{' · ' + html.escape(item['collection_name']) if item.get('collection_name') else ''}"
-        f" · <a href='#copilot:{quote(item['id'])}'>Enviar a Copilot</a></small></li>"
+        f" · <a href='#copilot:{quote(item['id'])}'>Enviar a Copilot</a>"
+        f" · <a href='#cancel:{quote(item['id'])}'>Cancelar tarea</a></small></li>"
         for item in tasks[-20:]
     ) or "<li class='empty'>Todavía no hay tareas.</li>"
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>Nueva pestaña</title>
