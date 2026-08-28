@@ -279,7 +279,7 @@ class IABrowser(QMainWindow):
             self.tab_data.pop(id(widget), None)
             self.tabs.removeTab(0)
 
-        self._add_tab(profile_id=profile_id)
+        self._add_tab()
         if open_home:
             self.load_url(data["home_url"])
         self.current_webview().setZoomFactor(data.get("zoom", 1.0))
@@ -336,35 +336,12 @@ class IABrowser(QMainWindow):
         self.rail.rebuild(self.sidebar_apps_store.all(), self.app_panel.active_app_id)
 
     def _handle_new_window_request(self, request):
-        webview = self._add_tab(profile_id=self.current_profile_id)
+        webview = self._add_tab()
         request.openIn(webview.page())
 
     def _setup_sidebar(self, parent_layout):
         """Sidebar con Perfiles y Colecciones."""
         sidebar_layout = QVBoxLayout()
-
-        # --- Perfiles (menú desplegable) ---
-        profiles_label = QLabel("👤 Perfiles")
-        sidebar_layout.addWidget(profiles_label)
-
-        profile_row = QHBoxLayout()
-        self.profiles_combo = QComboBox()
-        self.profiles_combo.currentIndexChanged.connect(self._on_profile_combo_changed)
-        profile_row.addWidget(self.profiles_combo, 1)
-
-        manage_profile_btn = QPushButton("⚙")
-        manage_profile_btn.setFixedWidth(32)
-        manage_profile_btn.setToolTip("Configurar agentes, perfiles y carpeta común")
-        manage_profile_btn.clicked.connect(self._manage_profile_menu)
-        profile_row.addWidget(manage_profile_btn)
-        sidebar_layout.addLayout(profile_row)
-
-        self.profile_info_label = QLabel("")
-        self.profile_info_label.setWordWrap(True)
-        self.profile_info_label.setStyleSheet("color: gray; font-size: 11px;")
-        sidebar_layout.addWidget(self.profile_info_label)
-
-        sidebar_layout.addSpacing(16)
 
         # --- Colecciones ---
         collections_label = QLabel("🗂 Colecciones")
@@ -479,8 +456,8 @@ class IABrowser(QMainWindow):
     # ------------------------------------------------------------------
 
     def _add_tab(self, profile_id: str | None = None, collection_id: str | None = None):
-        """Agrega una pestaña usando el perfil indicado (o el activo)."""
-        profile_id = profile_id or self.current_profile_id
+        """Agrega una pestaña usando el perfil indicado o Default."""
+        profile_id = profile_id or self.profile_manager.get_default_profile_id()
         qt_profile = self._get_qt_profile(profile_id)
 
         webview = UnifiedWebTab(
@@ -510,7 +487,7 @@ class IABrowser(QMainWindow):
         return webview
 
     def _handle_new_tab_request(self):
-        return self._add_tab(profile_id=self.current_profile_id).page()
+        return self._add_tab().page()
 
     def _setup_plus_tab(self):
         self.plus_widget = QWidget()
@@ -606,22 +583,7 @@ class IABrowser(QMainWindow):
     def _open_new_default_tab(self):
         """Botón '+ Tab': siempre abre con el perfil Default,
         independientemente de cuál esté seleccionado en el combo."""
-        default_id = self.profile_manager.get_default_profile_id()
-        self._open_new_tab_with_profile(default_id)
-
-    def _open_new_tab_with_profile(self, profile_id: str):
-        """Abre una pestaña nueva usando el perfil indicado, cargando su
-        home_url, sin tocar las pestañas existentes."""
-        webview = self._add_tab(profile_id=profile_id)
-        data = self.profile_manager.get_profile(profile_id)
-        if data:
-            task_manager = TaskManager(profile_id)
-            webview.page().setHtml(
-                render_new_tab_page(task_manager.tasks),
-                QUrl("about:blank"),
-            )
-            webview.setZoomFactor(data.get("zoom", 1.0))
-        return webview
+        return self._add_tab()
 
     def _close_tab(self, index: int):
         if self.tabs.widget(index) is self.plus_widget:
@@ -901,40 +863,14 @@ class IABrowser(QMainWindow):
     # ------------------------------------------------------------------
 
     def _load_profiles_list(self):
-        """Repuebla el combo de perfiles sin disparar el cambio de activo."""
-        self.profiles_combo.blockSignals(True)
-        self.profiles_combo.clear()
-        for p in self.profile_manager.profiles:
-            self.profiles_combo.addItem(p["name"], p["id"])
-        self.profiles_combo.blockSignals(False)
+        """Actualiza el estado del perfil activo sin mostrarlo en la sidebar."""
         self._highlight_active_profile()
 
     def _highlight_active_profile(self):
-        index = self.profiles_combo.findData(self.current_profile_id)
-        if index >= 0 and self.profiles_combo.currentIndex() != index:
-            self.profiles_combo.blockSignals(True)
-            self.profiles_combo.setCurrentIndex(index)
-            self.profiles_combo.blockSignals(False)
-
         data = self.profile_manager.get_profile(self.current_profile_id)
         if data:
             git_txt = " · Git ✅" if data.get("git_versioning") else ""
-            self.profile_info_label.setText(f"Archivos comunes: {self.profile_manager.get_files_dir()}{git_txt}")
             self.setWindowTitle(f"IA Browser — {data['name']}")
-
-    def _on_profile_combo_changed(self, index: int):
-        """Al elegir un perfil del combo, abre una PESTAÑA NUEVA con ese
-        perfil (no cierra las pestañas existentes)."""
-        profile_id = self.profiles_combo.itemData(index)
-        if not profile_id or profile_id == self.current_profile_id:
-            return
-        self._open_new_tab_with_profile(profile_id)
-
-    def _manage_profile_menu(self):
-        """Abre la configuración central de agentes y perfiles."""
-        profile_id = self.profiles_combo.currentData()
-        if profile_id:
-            self._open_ai_manager(profile_id)
 
     def _open_ai_manager(self, profile_id: str):
         profile = self.profile_manager.get_profile(profile_id)
@@ -971,9 +907,11 @@ class IABrowser(QMainWindow):
         dialog.activateWindow()
 
     def _on_agent_profile_changed(self, profile_id):
-        if profile_id and profile_id != self.current_profile_id:
-            self._open_new_tab_with_profile(profile_id)
-            self._load_profiles_list()
+        if profile_id:
+            self.statusBar().showMessage(
+                "Perfil de configuración cambiado; las pestañas normales usan Default.",
+                4000,
+            )
 
     def _change_shared_folder(self):
         directory = QFileDialog.getExistingDirectory(
@@ -1104,7 +1042,7 @@ class IABrowser(QMainWindow):
             shared_git = any(p.get("git_versioning") for p in self.profile_manager.profiles)
             new_profile = self.profile_manager.create_profile(name, files_dir, shared_git)
             self._load_profiles_list()
-            self._open_new_tab_with_profile(new_profile["id"])
+            self._open_new_default_tab()
             if git_versioning and not GitVersioning.check_identity(files_dir):
                 self._set_git_warning(
                     "⚠ Git no tiene user.name/user.email configurados: los commits "
@@ -1145,7 +1083,7 @@ class IABrowser(QMainWindow):
 
         if self.tabs.count() == 0:
             fallback_id = self.profile_manager.get_default_profile_id()
-            self._add_tab(profile_id=fallback_id)
+            self._add_tab()
             data = self.profile_manager.get_profile(fallback_id)
             if data:
                 self.load_url(data["home_url"])
@@ -1278,7 +1216,7 @@ class IABrowser(QMainWindow):
             if existing_index is not None:
                 self.tabs.setCurrentIndex(existing_index)
                 return
-            webview = self._add_tab(profile_id=data["profile_id"], collection_id=data["collection_id"])
+            webview = self._add_tab(collection_id=data["collection_id"])
             webview.setUrl(QUrl(data["url"]))
         elif kind == "folder":
             self._open_collection_folder(data["collection_id"])
@@ -1313,7 +1251,7 @@ class IABrowser(QMainWindow):
 
         Path(download_dir).mkdir(parents=True, exist_ok=True)
         file_url = QUrl.fromLocalFile(download_dir).toString()
-        webview = self._add_tab(profile_id=self.current_profile_id, collection_id=collection_id)
+        webview = self._add_tab(collection_id=collection_id)
         webview.setUrl(QUrl(file_url))
 
     def _on_collection_context_menu(self, pos):
@@ -1485,7 +1423,7 @@ class IABrowser(QMainWindow):
             return False
 
         for t in valid_tabs:
-            webview = self._add_tab(profile_id=t["profile_id"], collection_id=t.get("collection_id"))
+            webview = self._add_tab(collection_id=t.get("collection_id"))
             restore_tab_metadata(self.tabs, self.tabs.indexOf(webview), t)
             webview.setUrl(QUrl(t["url"]))
 

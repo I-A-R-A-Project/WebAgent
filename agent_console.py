@@ -9,7 +9,7 @@ from PyQt6.QtCore import QProcess, QProcessEnvironment, Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-    QMessageBox, QTabWidget, QVBoxLayout, QWidget,
+    QFileDialog, QMessageBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from ai_manager import AGENT_DEFS, AGENT_ORDER, AgentConfigStore
@@ -26,6 +26,7 @@ class AgentConsolePanel(QWidget):
         self.autorun_process = None
         self.current_output = None
         self._copilot_output_buffer = ""
+        self._auth_warning_shown = set()
         self.setVisible(False)
 
         layout = QVBoxLayout(self)
@@ -47,6 +48,16 @@ class AgentConsolePanel(QWidget):
         controls.addWidget(self.stop_btn)
         layout.addLayout(controls)
 
+        directory_row = QHBoxLayout()
+        directory_row.addWidget(QLabel("Directorio:"))
+        self.directory_edit = QLineEdit(self.folder_getter())
+        self.directory_edit.setToolTip("Directorio de trabajo de la consola")
+        directory_row.addWidget(self.directory_edit, 1)
+        browse_btn = QPushButton("Elegir...")
+        browse_btn.clicked.connect(self._choose_directory)
+        directory_row.addWidget(browse_btn)
+        layout.addLayout(directory_row)
+
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
         self.stdin_edit = QLineEdit()
@@ -56,7 +67,10 @@ class AgentConsolePanel(QWidget):
 
     def _environment(self, agent_id):
         profile_id = self.profile_getter()
-        folder = self.folder_getter()
+        folder = self.directory_edit.text().strip() or self.folder_getter()
+        if not Path(folder).is_dir():
+            self._new_tab(agent_id, f"Directorio inexistente: {folder}")
+            return
         config = AgentConfigStore().get(folder)
         environment = QProcessEnvironment.systemEnvironment()
         for name in ("COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "ANYAPI_API_KEY"):
@@ -74,6 +88,8 @@ class AgentConsolePanel(QWidget):
         if self.process is not None:
             return
         agent_id = self.agent_combo.currentData()
+        self._auth_warning_shown.discard(agent_id)
+        self._copilot_output_buffer = ""
         task = self.task_edit.text().strip()
         if not task:
             return
@@ -122,8 +138,32 @@ class AgentConsolePanel(QWidget):
             if self.agent_combo.currentData() == "copilot":
                 self._copilot_output_buffer += data
                 self._open_copilot_auth_url(data)
+            self._detect_auth_error(self.agent_combo.currentData(), data)
             self.current_output.insertPlainText(data)
             self.current_output.moveCursor(self.current_output.textCursor().MoveOperation.End)
+
+    def _choose_directory(self):
+        directory = QFileDialog.getExistingDirectory(
+            self, "Directorio de trabajo de la consola", self.directory_edit.text()
+        )
+        if directory:
+            self.directory_edit.setText(directory)
+
+    def _detect_auth_error(self, agent_id, text):
+        if agent_id == "anyapi" and "Falta ANYAPI_API_KEY" in text:
+            message = "AnyAPI no está autenticado. Configurá la API key en Configuración → Agentes IA."
+        elif agent_id == "copilot" and "To authenticate, you can use" in text:
+            message = (
+                "Copilot no está autenticado. Usá 'copilot' y ejecutá '/login', "
+                "o configurá COPILOT_GITHUB_TOKEN/GH_TOKEN/GITHUB_TOKEN."
+            )
+        else:
+            return
+        if agent_id not in self._auth_warning_shown:
+            self._auth_warning_shown.add(agent_id)
+            if self.current_output:
+                self.current_output.appendPlainText(f"\n⚠ {message}\n")
+            QMessageBox.warning(self, "Autenticación requerida", message)
 
     def _git_context(self):
         folder = self.folder_getter()

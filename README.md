@@ -33,7 +33,7 @@ sus propias sesiones, archivos, cookies, credenciales de agentes y ramas Git.
 
 Cada perfil tiene cookies, cache y sesión aisladas. Los archivos y descargas
 usan una única carpeta común configurable desde **Configuración → Agentes IA**.
-de agente y cuentas autenticadas independientes. Un perfil puede contener la
+Las sesiones y cuentas autenticadas siguen siendo independientes. Un perfil puede contener la
 cuenta correspondiente de Copilot, Codex, GitHub, Claude y Gemini. El perfil
 `Default` se usa cuando una Colección no requiere una cuenta específica y no
 se puede eliminar.
@@ -43,10 +43,8 @@ siguiente perfil disponible y reintentar la tarea conservando su contexto.
 Las credenciales, sesiones e historiales de conversación siguen separados
 entre perfiles.
 
-Cuando Git está activo, IA Browser separa el trabajo automáticamente:
-
-- `profile/<id>-raw`: descargas y cambios automáticos.
-- `profile/<id>`: trabajo de agentes y cambios revisados.
+Cuando Git está activo, IA Browser usa `master` para cambios crudos y `main`
+para el trabajo de agentes y cambios revisados.
 
 IA Browser no cambia de rama si hay cambios sin commitear que puedan mezclarse.
 Esto evita que una descarga o agente sobrescriba accidentalmente archivos de
@@ -62,9 +60,8 @@ Las Colecciones son espacios de trabajo del navegador. Cada una puede guardar:
   determinada; una misma Colección puede contener URLs de perfiles distintos.
 - Configuración Git y ramas fijas del proyecto (`master` cruda y `main` final).
 
-Si una URL no tiene perfil asignado, se abre con `Default`. La asignación por
-URL permite abrir cada página con las cookies y la cuenta correctas sin
-cambiar otras URLs o Colecciones.
+Las pestañas normales se abren con `Default`; solo los flujos explícitos de
+autenticación de un agente abren una pestaña con otro perfil.
 
 La configuración **Agentes IA** se abre desde **Configuración → Agentes IA...**.
 El diálogo permite seleccionar y administrar perfiles, cambiar la carpeta
@@ -160,7 +157,7 @@ Los imports son locales; ejecutar `python main.py` desde la carpeta `IA`.
 ```text
 IA/
 ├── main.py                 # Ventana, pestañas, perfiles y navegación
-├── profiles.py             # Perfiles aislados y carpetas de trabajo
+├── profiles.py             # Perfiles aislados y carpeta común de archivos
 ├── collections_manager.py  # Colecciones y marcadores multi-perfil
 ├── downloads.py            # Descargas, reemplazo y extracción
 ├── ai_manager.py           # Terminal integrada y gestión de agentes
@@ -247,7 +244,8 @@ permite guardar el crawl en JSON.
 IA Browser guarda datos en `~/.ia_browser/`:
 
 ```text
-profiles.json                 # Perfiles, carpetas y preferencias
+profiles.json                 # Perfiles y preferencias
+files_dir.txt                # Carpeta común de archivos y descargas
 collections.json              # Colecciones y marcadores
 session.json                  # Pestañas restaurables
 copilot_profiles/<id>/        # Estado de Copilot por perfil
