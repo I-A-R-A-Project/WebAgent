@@ -81,6 +81,7 @@ Collections link multiple profiles to a single workspace with optional Git versi
 - `scripts/refactor_ast_grep.py`: AST-based structural search/rewrite with ast-grep
 - `scripts/website_crawl.py`: bounded HTTP crawler with compact JSON output
 - `scripts/website_analyze.py`: compact technical report from crawl JSON
+- `scripts/website_scrape.py`: extract structured rows from crawl URLs
 - `scripts/toggle_autorun.py`: toggle per-folder autorun settings (edits ~/.ia_browser/codex_config.json)
 - New `autorun` config per-folder: `{ "autorun": { "enabled": false, "command": "" } }` — if enabled, the configured command runs automatically after an agent completes. The AIAgents dialog runs the command, streams its output to the "Salida" panel, and shows a warning if the autorun exits with a non-zero code.
 
@@ -137,6 +138,9 @@ restrictions, and credential isolation enabled by default.
 results for HTTP/request errors, duplicate or missing titles, missing meta
 descriptions/headings, and links to failed pages without downloading content
 again.
+
+`website_tools.scraper` provides CSS-selector JSON extraction for text and
+attributes, with JSON/CSV output through `scripts/website_scrape.py`.
 
 For local testing, run `python scripts/website_tools_test_server.py` and use
 `http://127.0.0.1:8765/`. The fixture contains internal links, a duplicate

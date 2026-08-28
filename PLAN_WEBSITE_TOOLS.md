@@ -11,6 +11,8 @@
   pestaña actual, ejecución en worker y guardado del crawl.
 - Downloader MVP iniciado: descarga de páginas de un crawl, límites de bytes,
   rutas seguras, hashes y manifest JSON.
+- Scraper MVP iniciado: reglas JSON con selectores CSS simples, extracción de
+  texto/atributos y exportación JSON/CSV.
 - Sitio local de prueba: `http://127.0.0.1:8765/`.
 
 ## Próximas fases
@@ -20,7 +22,7 @@
    - Resolver URLs relativas y reescribir enlaces offline.
    - Integrar carpeta temporal y confirmación desde la UI.
    - Confirmación antes de mover resultados a la carpeta final.
-2. **Scraper MVP**
+2. **Completar Scraper MVP**
    - Reglas CSS/XPath en JSON/YAML.
    - Extraer texto, atributos, enlaces, imágenes y tablas.
    - Paginación y exportación CSV/JSON/JSONL/SQLite.

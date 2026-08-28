@@ -1,0 +1,12 @@
+{
+  "item_selector": "li",
+  "fields": {
+    "id": {
+      "selector": ".",
+      "attribute": "data-id"
+    },
+    "name": {
+      "selector": "."
+    }
+  }
+}

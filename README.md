@@ -194,6 +194,13 @@ genera `website-manifest.json` con estado, tamaño y SHA-256:
 python scripts/website_download.py crawl.json --output sitio-descargado --max-pages 25
 ```
 
+El Scraper MVP acepta una regla JSON con selector de elementos y campos de
+texto o atributos:
+
+```bash
+python scripts/website_scrape.py crawl.json --rule website_tools/test_site/products-rule.json --output rows.csv --format csv
+```
+
 Para probarlo sin depender de Internet, iniciá el sitio interno:
 
 ```bash

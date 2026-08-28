@@ -3,8 +3,10 @@
 from .crawler import CrawlConfig, CrawlResult, crawl
 from .analyzer import SiteReport, analyze
 from .downloader import DownloadConfig, DownloadResult, download_site
+from .scraper import ScrapeRule, ScrapeResult, scrape_html
 
 __all__ = [
     "CrawlConfig", "CrawlResult", "crawl", "SiteReport", "analyze",
     "DownloadConfig", "DownloadResult", "download_site",
+    "ScrapeRule", "ScrapeResult", "scrape_html",
 ]
