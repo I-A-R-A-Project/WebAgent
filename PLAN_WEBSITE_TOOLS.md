@@ -36,15 +36,23 @@
    - [x] Paginación limitada mediante `next_selector`.
    - [x] Exportación CSV/JSON/JSONL/SQLite.
    - [ ] XPath en JSON/YAML (requiere motor opcional).
-3. **Contenido dinámico**
-   - Usar QWebEngine solo cuando el sitio requiera JavaScript.
-   - Esperar selectores, scroll y paginación controlada.
-4. **Selector visual**
-   - Seleccionar elementos desde una página.
-   - Generar y probar selectores antes de ejecutar un trabajo.
-5. **IA y comparación**
+3. **Extensiones opcionales**
+   - Renderizado dinámico con QWebEngine: pendiente, requiere un worker de
+     navegador aislado, espera de selectores y políticas explícitas de cookies.
+   - XPath en reglas: pendiente, requiere incorporar un motor XPath.
+   - Selector visual: pendiente, requiere interacción directa con una pestaña
+     QWebEngine y generación de selectores.
+4. **IA y comparación**
    - Enviar informes compactos a Copilot/AnyAPI.
    - [x] Comparar dos crawls y exportar diferencias.
+
+## Estado de la primera versión
+
+La primera versión funcional queda completa para sitios HTML estáticos y APIs
+HTTP, con límites, robots.txt, whitelists/blacklists, concurrencia controlada,
+descarga offline, extracción paginada y comparación. Las extensiones anteriores
+se mantienen separadas para no introducir dependencias ni reutilizar
+credenciales del navegador sin autorización explícita.
 
 ## Reglas de seguridad
 
