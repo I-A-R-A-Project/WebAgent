@@ -485,7 +485,7 @@ class IABrowser(QMainWindow):
         task_manager = TaskManager(profile_id)
         webview.page().setHtml(
             render_new_tab_page(task_manager.tasks),
-            QUrl("ia://new-tab"),
+            QUrl("about:blank"),
         )
         self.session_autosaver.schedule()
         return webview
@@ -531,6 +531,42 @@ class IABrowser(QMainWindow):
                 self._agent_dialogs = getattr(self, "_agent_dialogs", [])
                 self._agent_dialogs.append(dialog)
             return
+        fragment = url.fragment()
+        if fragment.startswith("copilot:"):
+            task_id = fragment.split(":", 1)[1]
+            profile_id = self.tab_data.get(id(webview), {}).get("profile_id", self.current_profile_id)
+            manager = TaskManager(profile_id)
+            task = next((item for item in manager.tasks if item["id"] == task_id), None)
+            profile = self.profile_manager.get_profile(profile_id)
+            if task and profile:
+                dialog = AIAgentsDialog(
+                    self,
+                    profile.get("files_dir", str(Path.home())),
+                    profile_id=profile_id,
+                    profile_ids=[item["id"] for item in self.profile_manager.profiles],
+                    profile_names={item["id"]: item["name"] for item in self.profile_manager.profiles},
+                    auth_url_handler=self._open_copilot_auth_url,
+                )
+                dialog.agent_widgets["copilot"]["task_edit"].setPlainText(task["text"])
+                dialog.show()
+                self._agent_dialogs = getattr(self, "_agent_dialogs", [])
+                self._agent_dialogs.append(dialog)
+            return
+        if fragment.startswith("task?"):
+            text = parse_qs(fragment.split("?", 1)[1], keep_blank_values=True).get("text", [""])[0]
+            profile_id = self.tab_data.get(id(webview), {}).get("profile_id", self.current_profile_id)
+            manager = TaskManager(profile_id)
+            task = manager.add(text.strip(), self.collection_manager.collections)
+            webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("about:blank"))
+            if not task["collection_id"]:
+                answer = QMessageBox.question(self, "Nueva Colección", f"La tarea no coincide con una Colección.\n¿Crear una para «{text}»?")
+                if answer == QMessageBox.StandardButton.Yes:
+                    collection = self.collection_manager.create_collection(text[:60].strip() or "Nueva tarea")
+                    task["collection_id"] = collection["id"]
+                    task["collection_name"] = collection["name"]
+                    manager.save()
+                    webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("about:blank"))
+            return
         if url.scheme() == "ia" and url.host() == "task":
             text = parse_qs(url.query(), keep_blank_values=True).get("text", [""])[0]
             profile_id = self.tab_data.get(id(webview), {}).get("profile_id", self.current_profile_id)
@@ -542,7 +578,7 @@ class IABrowser(QMainWindow):
                     task = manager.classify_with_anyapi(task, self.collection_manager.collections, api_key)
                 except (OSError, ValueError, KeyError) as exc:
                     self.statusBar().showMessage(f"AnyAPI no pudo clasificar la tarea: {exc}", 6000)
-            webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("ia://new-tab"))
+            webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("about:blank"))
             if not task["collection_id"]:
                 answer = QMessageBox.question(self, "Nueva Colección", f"La tarea no coincide con una Colección.\n¿Crear una para «{text}»?")
                 if answer == QMessageBox.StandardButton.Yes:
@@ -550,7 +586,7 @@ class IABrowser(QMainWindow):
                     task["collection_id"] = collection["id"]
                     task["collection_name"] = collection["name"]
                     manager.save()
-                    webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("ia://new-tab"))
+                    webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("about:blank"))
             return
         if webview is not self.current_webview():
             return
@@ -589,7 +625,7 @@ class IABrowser(QMainWindow):
             task_manager = TaskManager(profile_id)
             webview.page().setHtml(
                 render_new_tab_page(task_manager.tasks),
-                QUrl("ia://new-tab"),
+                QUrl("about:blank"),
             )
             webview.setZoomFactor(data.get("zoom", 1.0))
         return webview

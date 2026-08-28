@@ -10,7 +10,7 @@ def render_new_tab_page(tasks=None) -> str:
         f"<li><strong>{html.escape(item['text'])}</strong> "
         f"<small>{html.escape(item.get('status', 'pending'))}"
         f"{' · ' + html.escape(item['collection_name']) if item.get('collection_name') else ''}"
-        f" · <a href='ia://copilot?task={item['id']}'>Enviar a Copilot</a></small></li>"
+        f" · <a href='#copilot:{quote(item['id'])}'>Enviar a Copilot</a></small></li>"
         for item in tasks[-20:]
     ) or "<li class='empty'>Todavía no hay tareas.</li>"
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>Nueva pestaña</title>
@@ -21,9 +21,9 @@ button{{margin-top:8px;padding:10px 18px;border:0;border-radius:18px;background:
 ul{{padding:0;list-style:none}}li{{padding:12px;border-bottom:1px solid #3c4043}}small{{color:#9aa0a6}}.empty{{color:#9aa0a6}}</style></head>
 <body><main class="wrap"><h1>IA Browser</h1>
 <form action="https://www.google.com/search" method="GET"><input name="q" autofocus placeholder="Buscar en Google o escribir una URL"></form>
-<form action="ia://task" method="GET"><input name="text" placeholder="Agregar tarea para AnyAPI"><button type="submit">Agregar tarea</button></form>
+<form action="#task" method="GET"><input name="text" placeholder="Agregar tarea para AnyAPI"><button type="submit">Agregar tarea</button></form>
 <h2>Tareas</h2><ul>{rows}</ul></main></body></html>"""
 
 
 def task_url(text: str) -> str:
-    return f"ia://task?text={quote(text)}"
+    return f"#task?text={quote(text)}"
