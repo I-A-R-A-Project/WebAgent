@@ -29,6 +29,14 @@ class TaskManager:
                 return task
         return None
 
+    def delete(self, task_id: str) -> bool:
+        original_count = len(self.tasks)
+        self.tasks = [task for task in self.tasks if task.get("id") != task_id]
+        if len(self.tasks) == original_count:
+            return False
+        self.save()
+        return True
+
     def add(self, text: str, collections: list[dict]) -> dict:
         task = {
             "id": uuid.uuid4().hex[:12],

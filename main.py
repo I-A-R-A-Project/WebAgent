@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEngineDownloadRequest
+from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEngineDownloadRequest, QWebEnginePage
 from PyQt6.QtCore import Qt, QUrl, QMimeData, QEvent
 from PyQt6.QtGui import QAction, QKeySequence, QKeyEvent
 
@@ -43,9 +43,12 @@ from web_common.session import (
 from web_common.sidebar import AppPanelOverlay, SidebarContainer, SidebarRail
 from web_common import local_viewer
 from web_common.downloader_handoff import handoff_url_to_downloader
-from web_common.tabs import VIDEO_EXTS, UnifiedWebTab, install_tab_context_menu
+from web_common.tabs import (
+    VIDEO_EXTS, UnifiedWebTab, ContextTabBar, install_tab_context_menu,
+)
 from web_common.media_tabs import open_video_tab as add_video_tab
 from web_common.video_tab import VideoTab
+from web_common.epub_tab import EpubTab
 from web_common import folder_viewer
 from web_common.web_profiles import build_web_profile
 from ai_manager import AIAgentsDialog
@@ -80,6 +83,8 @@ class IABrowser(QMainWindow):
         # para que no se destruyan mientras la descarga sigue en background.
         self._download_dialogs = []
         self._agent_dialogs = []
+        self.devtools_dock = None
+        self.devtools_view = None
 
         self._setup_ui()
         self._setup_status_bar()
@@ -373,6 +378,7 @@ class IABrowser(QMainWindow):
         right_layout.addWidget(navbar)
 
         self.tabs = QTabWidget()
+        self.tabs.setTabBar(ContextTabBar(self.tabs))
         self.tabs.setTabsClosable(True)
         self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
@@ -384,6 +390,7 @@ class IABrowser(QMainWindow):
             self.tabs,
             close_tab=self._close_tab,
             plus_widget=self.plus_widget,
+            direct_right_click=True,
         )
         right_layout.addWidget(self.tabs)
         right_container = QWidget()
@@ -512,9 +519,20 @@ class IABrowser(QMainWindow):
             task_id = fragment.split(":", 1)[1]
             profile_id = self.tab_data.get(id(webview), {}).get("profile_id", self.current_profile_id)
             manager = TaskManager(profile_id)
-            if manager.cancel(task_id):
+            task = next((item for item in manager.tasks if item.get("id") == task_id), None)
+            changed = (
+                manager.delete(task_id)
+                if task and task.get("status") == "cancelled"
+                else manager.cancel(task_id)
+            )
+            if changed:
                 webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("about:blank"))
-                self.statusBar().showMessage("Tarea cancelada", 3000)
+                self.statusBar().showMessage(
+                    "Tarea eliminada"
+                    if task and task.get("status") == "cancelled"
+                    else "Tarea cancelada",
+                    3000,
+                )
             return
         if fragment.startswith("copilot:"):
             task_id = fragment.split(":", 1)[1]
@@ -571,6 +589,35 @@ class IABrowser(QMainWindow):
         self.current_url = url.toString()
         self.address_bar.setText("" if self.current_url == "about:blank" else self.current_url)
         self._refresh_collection_icon(self.current_url)
+
+    def _toggle_devtools(self):
+        webview = self.current_webview()
+        if not webview:
+            return
+        if self.devtools_dock is None:
+            self.devtools_dock = QDockWidget("Herramientas de desarrollador", self)
+            self.devtools_dock.setAllowedAreas(
+                Qt.DockWidgetArea.BottomDockWidgetArea
+                | Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            self.devtools_view = QWebEngineView(self.devtools_dock)
+            self.devtools_dock.setWidget(self.devtools_view)
+            self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.devtools_dock)
+            self.devtools_dock.visibilityChanged.connect(self._on_devtools_visibility_changed)
+        if self.devtools_dock.isVisible():
+            self.devtools_dock.hide()
+            return
+        devtools_page = QWebEnginePage(webview.page().profile(), self.devtools_view)
+        self.devtools_view.setPage(devtools_page)
+        webview.page().setDevToolsPage(devtools_page)
+        self.devtools_dock.show()
+        self.devtools_dock.raise_()
+
+    def _on_devtools_visibility_changed(self, visible):
+        if not visible:
+            webview = self.current_webview()
+            if webview:
+                webview.page().setDevToolsPage(None)
 
     def _on_tab_title_changed(self, webview, title: str):
         index = self.tabs.indexOf(webview)
@@ -635,6 +682,8 @@ class IABrowser(QMainWindow):
         self.current_url = webview.url().toString()
         self.address_bar.setText("" if self.current_url == "about:blank" else self.current_url)
         self._refresh_collection_icon(self.current_url)
+        if self.devtools_dock and self.devtools_dock.isVisible() and self.devtools_view:
+            webview.page().setDevToolsPage(self.devtools_view.page())
 
     def _on_address_bar_enter(self, text: str):
         self.load_url(text)
@@ -670,6 +719,10 @@ class IABrowser(QMainWindow):
         agents_action = QAction("Agentes IA...", self)
         agents_action.triggered.connect(lambda: self._open_ai_manager(self.current_profile_id))
         view_menu.addAction(agents_action)
+        devtools_action = QAction("Herramientas de desarrollador", self)
+        devtools_action.setShortcut("F12")
+        devtools_action.triggered.connect(self._toggle_devtools)
+        view_menu.addAction(devtools_action)
         view_menu.addSeparator()
 
         website_action = QAction("🌐 Website Tools...", self)
@@ -775,7 +828,23 @@ class IABrowser(QMainWindow):
                 )
                 return
             if ext == ".epub":
-                tab.setUrl(QUrl.fromLocalFile(local_viewer.extract_epub_root(local_path, cache_dir)))
+                epub = EpubTab(
+                    tab.page().profile(),
+                    local_path,
+                    cache_dir=cache_dir,
+                    parent=self,
+                )
+                index = self.tabs.indexOf(tab)
+                metadata = self.tab_data.get(id(tab), {})
+                self.tabs.removeTab(index)
+                self.tab_data.pop(id(tab), None)
+                self.tab_data[id(epub)] = {
+                    "profile_id": metadata.get("profile_id", self.current_profile_id),
+                    "collection_id": metadata.get("collection_id"),
+                }
+                self.tabs.insertTab(index, epub, epub.title())
+                self.tabs.setCurrentIndex(index)
+                tab.deleteLater()
                 return
         except Exception as exc:
             tab.page().setHtml(

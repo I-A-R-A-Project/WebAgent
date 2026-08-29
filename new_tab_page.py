@@ -6,14 +6,18 @@ from urllib.parse import quote
 
 def render_new_tab_page(tasks=None) -> str:
     tasks = tasks or []
-    rows = "".join(
-        f"<li><strong>{html.escape(item['text'])}</strong> "
-        f"<small>{html.escape(item.get('status', 'pending'))}"
-        f"{' · ' + html.escape(item['collection_name']) if item.get('collection_name') else ''}"
-        f" · <a href='#copilot:{quote(item['id'])}'>Enviar a Copilot</a>"
-        f" · <a href='#cancel:{quote(item['id'])}'>Cancelar tarea</a></small></li>"
-        for item in tasks[-20:]
-    ) or "<li class='empty'>Todavía no hay tareas.</li>"
+    rows = ""
+    for item in tasks[-20:]:
+        status = item.get("status", "pending")
+        cancel_label = "Eliminar tarea" if status == "cancelled" else "Cancelar tarea"
+        rows += (
+            f"<li><strong>{html.escape(item['text'])}</strong> "
+            f"<small>{html.escape(status)}"
+            f"{' · ' + html.escape(item['collection_name']) if item.get('collection_name') else ''}"
+            f" · <a href='#copilot:{quote(item['id'])}'>Enviar a Copilot</a>"
+            f" · <a href='#cancel:{quote(item['id'])}'>{cancel_label}</a></small></li>"
+        )
+    rows = rows or "<li class='empty'>Todavía no hay tareas.</li>"
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>Nueva pestaña</title>
 <style>body{{background:#202124;color:#e8eaed;font:16px Segoe UI;margin:0}}
 .wrap{{max-width:760px;margin:8vh auto;padding:24px}}h1{{color:#8ab4f8}}
