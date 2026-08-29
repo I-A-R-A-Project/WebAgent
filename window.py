@@ -37,7 +37,6 @@ from downloads import DownloadDialog
 from web_common.json_store import SidebarAppsStore
 from web_common.navbar import BasicNavbar, address_to_url, save_web_page
 from web_common.session import (
-    is_navigation_title,
     load_tab_session,
     restore_tab_metadata,
     SessionAutoSaver,
@@ -49,6 +48,7 @@ from web_common.downloader_handoff import handoff_url_to_downloader
 from web_common.tabs import (
     VIDEO_EXTS, UnifiedWebTab, ContextTabBar, TabbedPopupWindow,
     add_plus_tab, install_tab_context_menu, keep_plus_tab_last,
+    update_tab_icon, update_tab_title,
 )
 from web_common.media_tabs import open_video_tab as add_video_tab
 from web_common.video_tab import VideoTab
@@ -610,20 +610,10 @@ class IABrowser(QMainWindow):
         window.activateWindow()
 
     def _on_tab_title_changed(self, webview, title: str):
-        index = self.tabs.indexOf(webview)
-        if index >= 0:
-            session_title = webview.property("_session_title")
-            if is_navigation_title(title) and session_title:
-                self.tabs.setTabText(index, session_title)
-                return
-            if not is_navigation_title(title):
-                webview.setProperty("_session_title", "")
-            self.tabs.setTabText(index, (title or "Nueva pestaña")[:30])
+        update_tab_title(self.tabs, webview, title)
 
     def _on_tab_icon_changed(self, webview, icon):
-        index = self.tabs.indexOf(webview)
-        if index >= 0:
-            self.tabs.setTabIcon(index, icon)
+        update_tab_icon(self.tabs, webview, icon)
 
     def _open_new_default_tab(self):
         """Botón '+ Tab': siempre abre con el perfil Default,
