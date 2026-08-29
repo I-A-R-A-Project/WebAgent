@@ -13,6 +13,9 @@ import shutil
 from pathlib import Path
 from urllib.parse import parse_qs
 
+# Qt WebEngine exposes Chromium DevTools through this local endpoint.
+os.environ.setdefault("QTWEBENGINE_REMOTE_DEBUGGING", "9222")
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from datetime import datetime
 
@@ -23,7 +26,7 @@ from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEngineDownloadRequest, QWebEnginePage
+from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEngineDownloadRequest
 from PyQt6.QtCore import Qt, QUrl, QMimeData, QEvent
 from PyQt6.QtGui import QAction, QKeySequence, QKeyEvent
 
@@ -83,8 +86,7 @@ class IABrowser(QMainWindow):
         # para que no se destruyan mientras la descarga sigue en background.
         self._download_dialogs = []
         self._agent_dialogs = []
-        self.devtools_dock = None
-        self.devtools_view = None
+        self._devtools_windows = []
 
         self._setup_ui()
         self._setup_status_bar()
@@ -591,33 +593,23 @@ class IABrowser(QMainWindow):
         self._refresh_collection_icon(self.current_url)
 
     def _toggle_devtools(self):
-        webview = self.current_webview()
-        if not webview:
-            return
-        if self.devtools_dock is None:
-            self.devtools_dock = QDockWidget("Herramientas de desarrollador", self)
-            self.devtools_dock.setAllowedAreas(
-                Qt.DockWidgetArea.BottomDockWidgetArea
-                | Qt.DockWidgetArea.RightDockWidgetArea
+        window = QMainWindow(self)
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        window.setWindowTitle("Herramientas de desarrollador — Chromium")
+        window.resize(1100, 760)
+        view = QWebEngineView(window)
+        view.setUrl(QUrl("http://localhost:9222"))
+        window.setCentralWidget(view)
+        self._devtools_windows.append(window)
+        window.destroyed.connect(
+            lambda _obj=None, item=window: (
+                self._devtools_windows.remove(item)
+                if item in self._devtools_windows else None
             )
-            self.devtools_view = QWebEngineView(self.devtools_dock)
-            self.devtools_dock.setWidget(self.devtools_view)
-            self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.devtools_dock)
-            self.devtools_dock.visibilityChanged.connect(self._on_devtools_visibility_changed)
-        if self.devtools_dock.isVisible():
-            self.devtools_dock.hide()
-            return
-        devtools_page = QWebEnginePage(webview.page().profile(), self.devtools_view)
-        self.devtools_view.setPage(devtools_page)
-        webview.page().setDevToolsPage(devtools_page)
-        self.devtools_dock.show()
-        self.devtools_dock.raise_()
-
-    def _on_devtools_visibility_changed(self, visible):
-        if not visible:
-            webview = self.current_webview()
-            if webview:
-                webview.page().setDevToolsPage(None)
+        )
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     def _on_tab_title_changed(self, webview, title: str):
         index = self.tabs.indexOf(webview)
@@ -682,9 +674,6 @@ class IABrowser(QMainWindow):
         self.current_url = webview.url().toString()
         self.address_bar.setText("" if self.current_url == "about:blank" else self.current_url)
         self._refresh_collection_icon(self.current_url)
-        if self.devtools_dock and self.devtools_dock.isVisible() and self.devtools_view:
-            webview.page().setDevToolsPage(self.devtools_view.page())
-
     def _on_address_bar_enter(self, text: str):
         self.load_url(text)
 
