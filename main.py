@@ -47,7 +47,8 @@ from web_common.sidebar import AppPanelOverlay, SidebarContainer, SidebarRail
 from web_common import local_viewer
 from web_common.downloader_handoff import handoff_url_to_downloader
 from web_common.tabs import (
-    VIDEO_EXTS, UnifiedWebTab, ContextTabBar, install_tab_context_menu,
+    VIDEO_EXTS, UnifiedWebTab, ContextTabBar, TabbedPopupWindow,
+    install_tab_context_menu,
 )
 from web_common.media_tabs import open_video_tab as add_video_tab
 from web_common.video_tab import VideoTab
@@ -593,13 +594,17 @@ class IABrowser(QMainWindow):
         self._refresh_collection_icon(self.current_url)
 
     def _toggle_devtools(self):
-        window = QMainWindow(self)
+        default_id = self.profile_manager.get_default_profile_id()
+        window = TabbedPopupWindow(
+            self._get_qt_profile(default_id),
+            folder_view_handler=self._render_folder_view,
+            file_view_handler=self._render_file_view,
+            special_local_handler=self.handle_special_local_file,
+        )
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         window.setWindowTitle("Herramientas de desarrollador — Chromium")
         window.resize(1100, 760)
-        view = QWebEngineView(window)
-        view.setUrl(QUrl("http://localhost:9222"))
-        window.setCentralWidget(view)
+        window.current_view().setUrl(QUrl("http://localhost:9222"))
         self._devtools_windows.append(window)
         window.destroyed.connect(
             lambda _obj=None, item=window: (
