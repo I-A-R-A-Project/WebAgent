@@ -35,7 +35,7 @@ from profiles import ProfileManager, NewProfileDialog
 from collections_manager import CollectionManager, NewCollectionDialog, SaveToCollectionDialog
 from downloads import DownloadDialog
 from web_common.json_store import SidebarAppsStore
-from web_common.navbar import BasicNavbar, address_to_url, save_web_page
+from web_common.navbar import BasicNavbar, address_to_url, bind_navigation, save_web_page
 from web_common.session import (
     load_tab_session,
     restore_tab_metadata,
@@ -407,15 +407,15 @@ class IABrowser(QMainWindow):
 
     def _create_navbar(self) -> QToolBar:
         navbar = BasicNavbar(self)
-        navbar.on_back = lambda: self.current_webview().back()
-        navbar.on_forward = lambda: self.current_webview().forward()
-        navbar.on_reload = lambda: self.current_webview().reload()
-        navbar.on_stop = lambda: self.current_webview().stop()
-        navbar.on_address_bar_enter = self._on_address_bar_enter
-        navbar.on_save_page = lambda: save_web_page(
-            self.current_webview(),
-            target_dir=self.profile_manager.base_dir / "saved_pages",
-            status_callback=self.statusBar().showMessage,
+        bind_navigation(
+            navbar,
+            self.current_webview,
+            address_handler=self._on_address_bar_enter,
+            save_handler=lambda: save_web_page(
+                self.current_webview(),
+                target_dir=self.profile_manager.base_dir / "saved_pages",
+                status_callback=self.statusBar().showMessage,
+            ),
         )
 
         # Guardar referencias
