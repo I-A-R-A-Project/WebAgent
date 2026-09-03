@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 )
 
 from file_ops import GitVersioning, FileOps
+from web_common.local_viewer import archive_entries, extract_archive
 
 
 class DownloadDialog(QDialog):
@@ -375,31 +376,7 @@ class DownloadDialog(QDialog):
     def _read_archive_entries(path: Path):
         """Devuelve la lista de nombres dentro del comprimido, o None si
         no se pudo leer (formato no soportado, falta librería, o dañado)."""
-        lower = path.name.lower()
-        try:
-            if lower.endswith(".zip"):
-                import zipfile
-                with zipfile.ZipFile(path) as z:
-                    return [n for n in z.namelist() if not n.endswith("/")]
-            elif lower.endswith((".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar")):
-                import tarfile
-                with tarfile.open(path) as t:
-                    return [m.name for m in t.getmembers() if m.isfile()]
-            elif lower.endswith(".rar"):
-                import rarfile
-                with rarfile.RarFile(path) as r:
-                    return [n for n in r.namelist() if not n.endswith("/")]
-            elif lower.endswith(".7z"):
-                import py7zr
-                with py7zr.SevenZipFile(path, mode="r") as z:
-                    return list(z.getnames())
-            elif lower.endswith((".gz", ".bz2")):
-                return [path.stem]
-        except ImportError:
-            return None
-        except Exception:
-            return None
-        return None
+        return archive_entries(path)
 
     def _extract_temp_into_target(self) -> bool:
         """Extrae TODO el contenido del comprimido (ya descargado en el
@@ -407,36 +384,8 @@ class DownloadDialog(QDialog):
         path = self.temp_path
         folder = Path(self.target_dir)
         folder.mkdir(parents=True, exist_ok=True)
-        lower = path.name.lower()
         try:
-            if lower.endswith(".zip"):
-                import zipfile
-                with zipfile.ZipFile(path) as z:
-                    z.extractall(folder)
-            elif lower.endswith((".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar")):
-                import tarfile
-                with tarfile.open(path) as t:
-                    t.extractall(folder)
-            elif lower.endswith(".gz"):
-                import gzip
-                out_path = folder / path.stem
-                with gzip.open(path, "rb") as f_in, open(out_path, "wb") as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-            elif lower.endswith(".bz2"):
-                import bz2
-                out_path = folder / path.stem
-                with bz2.open(path, "rb") as f_in, open(out_path, "wb") as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-            elif lower.endswith(".rar"):
-                import rarfile
-                with rarfile.RarFile(path) as r:
-                    r.extractall(folder)
-            elif lower.endswith(".7z"):
-                import py7zr
-                with py7zr.SevenZipFile(path, mode="r") as z:
-                    z.extractall(path=folder)
-            else:
-                return False
+            extract_archive(path, folder)
             return True
         except Exception as e:
             # Si algo falla en el último paso, al menos guardamos el

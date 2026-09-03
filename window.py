@@ -32,7 +32,10 @@ from task_manager import TaskManager
 from agent_console import AgentConsolePanel
 from web_common.json_store import SidebarAppsStore
 from web_common.navbar import BasicNavbar, bind_navigation, save_web_page
-from web_common.navigation import active_tab, navigate_view, open_plus_tab, sync_address_bar
+from web_common.navigation import (
+    active_tab, adjust_zoom, navigate_view, open_plus_tab, set_zoom,
+    sync_address_bar,
+)
 from web_common.session import (
     load_tab_session,
     restore_tab_metadata,
@@ -51,7 +54,6 @@ from web_common.media_tabs import open_video_tab as add_video_tab
 from web_common.video_tab import VideoTab
 from web_common.epub_tab import EpubTab
 from web_common import folder_viewer
-from web_common.zoom import adjust_zoom, set_zoom
 from web_common.web_profiles import build_web_profile
 
 
@@ -744,60 +746,31 @@ class IABrowser(QMainWindow):
         )
 
     def _open_local_target(self, tab, local_path):
-        ext = os.path.splitext(local_path)[1].lower()
         cache_dir = self.profile_manager.base_dir / "archives_cache"
-        try:
-            if ext == ".zip":
-                tab.setUrl(QUrl.fromLocalFile(local_viewer.extract_zip(local_path, cache_dir)))
-                return
-            if ext == ".7z":
-                dest = local_viewer.extract_7z(local_path, cache_dir)
-                if dest is None:
-                    tab.page().setHtml(
-                        local_viewer.render_missing_dependency(local_path, "py7zr"),
-                        QUrl.fromLocalFile(local_path),
-                    )
-                else:
-                    tab.setUrl(QUrl.fromLocalFile(dest))
-                return
-            if ext == ".rar":
-                dest = local_viewer.extract_rar(local_path, cache_dir)
-                if dest:
-                    tab.setUrl(QUrl.fromLocalFile(dest))
-                    return
-                tab.page().setHtml(
-                    local_viewer.render_error(
-                        local_path,
-                        "No se pudo extraer. Instalá 7-Zip o WinRAR, "
-                        "o configurá 7z/unrar/unar en el PATH.",
-                    ),
-                    QUrl.fromLocalFile(local_path),
-                )
-                return
-            if ext == ".epub":
-                epub = EpubTab(
-                    tab.page().profile(),
-                    local_path,
-                    cache_dir=cache_dir,
-                    parent=self,
-                )
-                index = self.tabs.indexOf(tab)
-                metadata = self.tab_data.get(id(tab), {})
-                self.tabs.removeTab(index)
-                self.tab_data.pop(id(tab), None)
-                self.tab_data[id(epub)] = {
-                    "profile_id": metadata.get("profile_id", self.current_profile_id),
-                    "collection_id": metadata.get("collection_id"),
-                }
-                self.tabs.insertTab(index, epub, epub.title())
-                self.tabs.setCurrentIndex(index)
-                tab.deleteLater()
-                return
-        except Exception as exc:
-            tab.page().setHtml(
-                local_viewer.render_error(local_path, f"Error al procesar el archivo: {exc}"),
-                QUrl.fromLocalFile(local_path),
-            )
+        local_viewer.open_local_target(
+            tab,
+            local_path,
+            cache_dir,
+            epub_handler=self._replace_tab_with_epub,
+        )
+
+    def _replace_tab_with_epub(self, tab, local_path, cache_dir):
+        epub = EpubTab(
+            tab.page().profile(),
+            local_path,
+            cache_dir=cache_dir,
+            parent=self,
+        )
+        index = self.tabs.indexOf(tab)
+        metadata = self.tab_data.pop(id(tab), {})
+        self.tabs.removeTab(index)
+        self.tab_data[id(epub)] = {
+            "profile_id": metadata.get("profile_id", self.current_profile_id),
+            "collection_id": metadata.get("collection_id"),
+        }
+        self.tabs.insertTab(index, epub, epub.title())
+        self.tabs.setCurrentIndex(index)
+        tab.deleteLater()
 
     def _resolve_target_folder(self, tab_meta: dict) -> tuple[str, str]:
         """Devuelve (carpeta, etiqueta) según: primero la Colección de la
