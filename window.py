@@ -1,22 +1,13 @@
-"""
-window.py - ventana principal de IA Browser.
-
-Navegador con pestañas, perfiles aislados (sesión/cookies/cache propios) y
-"Colecciones" (grupos de marcadores multi-perfil con carpeta de descarga propia).
-
-El punto de entrada es main.py.
-"""
-
 import sys
 import os
 import shutil
-from pathlib import Path
 from urllib.parse import parse_qs
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # Qt WebEngine exposes Chromium DevTools through this local endpoint.
 os.environ.setdefault("QTWEBENGINE_REMOTE_DEBUGGING", "9222")
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from datetime import datetime
 
 from PyQt6.QtWidgets import (
@@ -34,6 +25,11 @@ from file_ops import GitVersioning
 from profiles import ProfileManager, NewProfileDialog
 from collections_manager import CollectionManager, NewCollectionDialog, SaveToCollectionDialog
 from downloads import DownloadDialog
+from ai_manager import AIAgentsDialog
+from scripts.website_tools.dialogs import WebsiteToolsDialog
+from new_tab_page import render_new_tab_page
+from task_manager import TaskManager
+from agent_console import AgentConsolePanel
 from web_common.json_store import SidebarAppsStore
 from web_common.navbar import BasicNavbar, address_to_url, bind_navigation, save_web_page
 from web_common.session import (
@@ -46,8 +42,8 @@ from web_common.sidebar import AppPanelOverlay, SidebarContainer, SidebarRail
 from web_common import local_viewer
 from web_common.downloader_handoff import handoff_url_to_downloader
 from web_common.tabs import (
-    VIDEO_EXTS, UnifiedWebTab, ContextTabBar, TabbedPopupWindow,
-    add_plus_tab, install_tab_context_menu, keep_plus_tab_last,
+    VIDEO_EXTS, UnifiedWebTab, TabbedPopupWindow,
+    add_plus_tab, configure_tab_widget, keep_plus_tab_last,
     update_tab_icon, update_tab_title,
 )
 from web_common.media_tabs import open_video_tab as add_video_tab
@@ -55,11 +51,6 @@ from web_common.video_tab import VideoTab
 from web_common.epub_tab import EpubTab
 from web_common import folder_viewer
 from web_common.web_profiles import build_web_profile
-from ai_manager import AIAgentsDialog
-from scripts.website_tools.dialogs import WebsiteToolsDialog
-from new_tab_page import render_new_tab_page
-from task_manager import TaskManager
-from agent_console import AgentConsolePanel
 
 
 class IABrowser(QMainWindow):
@@ -381,18 +372,14 @@ class IABrowser(QMainWindow):
         right_layout.addWidget(navbar)
 
         self.tabs = QTabWidget()
-        self.tabs.setTabBar(ContextTabBar(self.tabs))
-        self.tabs.setTabsClosable(True)
-        self.tabs.setMovable(True)
         self._setup_plus_tab()
-        self.tabs.tabCloseRequested.connect(self._close_tab)
-        self.tabs.currentChanged.connect(self._on_tab_changed)
-        self.tabs.tabBarClicked.connect(self._on_tab_bar_clicked)
-        self.tabs.tabBar().tabMoved.connect(self._on_tab_moved)
-        install_tab_context_menu(
+        configure_tab_widget(
             self.tabs,
             close_tab=self._close_tab,
             plus_widget=self.plus_widget,
+            current_changed=self._on_tab_changed,
+            tab_bar_clicked=self._on_tab_bar_clicked,
+            tab_moved=self._on_tab_moved,
             direct_right_click=True,
         )
         right_layout.addWidget(self.tabs)
@@ -767,11 +754,15 @@ class IABrowser(QMainWindow):
         new_webview.setUrl(QUrl(file_url))
 
     def handle_special_local_file(self, tab, local_path):
-        ext = os.path.splitext(local_path)[1].lower()
-        if ext in VIDEO_EXTS:
-            add_video_tab(self.tabs, local_path, self, title_limit=22)
-            return
-        self._open_local_target(tab, local_path)
+        local_viewer.handle_special_local_file(
+            tab,
+            local_path,
+            video_extensions=VIDEO_EXTS,
+            video_handler=lambda path: add_video_tab(
+                self.tabs, path, self, title_limit=22
+            ),
+            target_handler=self._open_local_target,
+        )
 
     def _open_local_target(self, tab, local_path):
         ext = os.path.splitext(local_path)[1].lower()
@@ -1012,26 +1003,26 @@ class IABrowser(QMainWindow):
         if not ok or not code:
             return
         script = f"""
-(() => {{
-  const code = {json.dumps(code)};
-  const input = document.querySelector(
-    'input[name="user_code"], input[id*="code" i], input[autocomplete="one-time-code"], input[type="text"]'
-  );
-  if (!input) return false;
-  const setter = Object.getOwnPropertyDescriptor(
-    HTMLInputElement.prototype, 'value'
-  ).set;
-  setter.call(input, code);
-  input.dispatchEvent(new Event('input', {{bubbles: true}}));
-  input.dispatchEvent(new Event('change', {{bubbles: true}}));
-  const form = input.form;
-  const button = form?.querySelector('button[type="submit"], input[type="submit"]')
-    || [...document.querySelectorAll('button')].find(item => /continue|authorize|submit/i.test(item.innerText));
-  if (button) button.click();
-  else if (form) form.submit();
-  return true;
-}})()
-"""
+            (() => {{
+            const code = {json.dumps(code)};
+            const input = document.querySelector(
+                'input[name="user_code"], input[id*="code" i], input[autocomplete="one-time-code"], input[type="text"]'
+            );
+            if (!input) return false;
+            const setter = Object.getOwnPropertyDescriptor(
+                HTMLInputElement.prototype, 'value'
+            ).set;
+            setter.call(input, code);
+            input.dispatchEvent(new Event('input', {{bubbles: true}}));
+            input.dispatchEvent(new Event('change', {{bubbles: true}}));
+            const form = input.form;
+            const button = form?.querySelector('button[type="submit"], input[type="submit"]')
+                || [...document.querySelectorAll('button')].find(item => /continue|authorize|submit/i.test(item.innerText));
+            if (button) button.click();
+            else if (form) form.submit();
+            return true;
+            }})()
+            """
         webview.page().runJavaScript(script)
 
     def _close_copilot_auth_tab(self, profile_id: str):
