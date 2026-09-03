@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEngineDownloadRequest
 from PyQt6.QtCore import Qt, QUrl, QMimeData, QEvent
-from PyQt6.QtGui import QAction, QKeySequence, QKeyEvent
+from PyQt6.QtGui import QAction, QKeySequence, QKeyEvent, QShortcut
 
 from file_ops import GitVersioning
 from profiles import ProfileManager, NewProfileDialog
@@ -31,7 +31,8 @@ from new_tab_page import render_new_tab_page
 from task_manager import TaskManager
 from agent_console import AgentConsolePanel
 from web_common.json_store import SidebarAppsStore
-from web_common.navbar import BasicNavbar, address_to_url, bind_navigation, save_web_page
+from web_common.navbar import BasicNavbar, bind_navigation, save_web_page
+from web_common.navigation import active_tab, navigate_view, open_plus_tab, sync_address_bar
 from web_common.session import (
     load_tab_session,
     restore_tab_metadata,
@@ -43,13 +44,14 @@ from web_common import local_viewer
 from web_common.downloader_handoff import handoff_url_to_downloader
 from web_common.tabs import (
     VIDEO_EXTS, UnifiedWebTab, TabbedPopupWindow,
-    add_plus_tab, configure_tab_widget, keep_plus_tab_last,
-    update_tab_icon, update_tab_title,
+    add_plus_tab, configure_tab_widget, prepare_tab_widget,
+    close_tab as close_shared_tab, update_tab_icon, update_tab_title,
 )
 from web_common.media_tabs import open_video_tab as add_video_tab
 from web_common.video_tab import VideoTab
 from web_common.epub_tab import EpubTab
 from web_common import folder_viewer
+from web_common.zoom import adjust_zoom, set_zoom
 from web_common.web_profiles import build_web_profile
 
 
@@ -83,6 +85,7 @@ class IABrowser(QMainWindow):
         self._setup_ui()
         self._setup_status_bar()
         self._setup_menu()
+        self._setup_shortcuts()
         self._load_profiles_list()
         self._load_collections_list()
 
@@ -98,6 +101,28 @@ class IABrowser(QMainWindow):
         self.git_warning_label = QLabel("")
         self.git_warning_label.setStyleSheet("color: #b45309; font-weight: bold; padding-right: 10px;")
         self.statusBar().addPermanentWidget(self.git_warning_label)
+
+    def _setup_shortcuts(self):
+        persist = lambda factor: self.profile_manager.update_profile(
+            self._active_profile_id_for_zoom(), zoom=factor
+        )
+        QShortcut(
+            QKeySequence("Ctrl+="), self,
+            activated=lambda: adjust_zoom(self.current_webview(), 0.1, persist),
+        )
+        QShortcut(
+            QKeySequence("Ctrl+-"), self,
+            activated=lambda: adjust_zoom(self.current_webview(), -0.1, persist),
+        )
+        QShortcut(
+            QKeySequence("Ctrl+0"), self,
+            activated=lambda: set_zoom(self.current_webview(), 1.0, persist),
+        )
+
+    def _active_profile_id_for_zoom(self) -> str:
+        webview = self.current_webview()
+        data = self.tab_data.get(id(webview), {})
+        return data.get("profile_id", self.current_profile_id)
 
     def _set_git_warning(self, text: str):
         self.git_warning_label.setText(text)
@@ -372,14 +397,16 @@ class IABrowser(QMainWindow):
         right_layout.addWidget(navbar)
 
         self.tabs = QTabWidget()
-        self._setup_plus_tab()
+        prepare_tab_widget(self.tabs)
+        self.plus_widget = add_plus_tab(self.tabs)
         configure_tab_widget(
             self.tabs,
             close_tab=self._close_tab,
             plus_widget=self.plus_widget,
             current_changed=self._on_tab_changed,
-            tab_bar_clicked=self._on_tab_bar_clicked,
-            tab_moved=self._on_tab_moved,
+            tab_bar_clicked=lambda index: open_plus_tab(
+                self.tabs, index, self.plus_widget, self._open_new_default_tab
+            ),
             direct_right_click=True,
         )
         right_layout.addWidget(self.tabs)
@@ -460,13 +487,17 @@ class IABrowser(QMainWindow):
         webview = UnifiedWebTab(
             qt_profile,
             parent_window=self,
-            folder_view_handler=self._render_folder_view,
-            file_view_handler=self._render_file_view,
+            folder_view_handler=folder_viewer.render_folder_view,
+            file_view_handler=folder_viewer.render_file_view,
             new_tab_handler=self._handle_new_tab_request,
             new_window_handler=self._handle_new_window_request,
             url_changed_handler=self._on_tab_url_changed,
-            title_changed_handler=self._on_tab_title_changed,
-            icon_changed_handler=self._on_tab_icon_changed,
+            title_changed_handler=lambda tab, title: update_tab_title(
+                self.tabs, tab, title
+            ),
+            icon_changed_handler=lambda tab, icon: update_tab_icon(
+                self.tabs, tab, icon
+            ),
             special_local_handler=self.handle_special_local_file,
         )
 
@@ -485,16 +516,6 @@ class IABrowser(QMainWindow):
 
     def _handle_new_tab_request(self):
         return self._add_tab().page()
-
-    def _setup_plus_tab(self):
-        self.plus_widget = add_plus_tab(self.tabs)
-
-    def _on_tab_bar_clicked(self, index: int):
-        if self.tabs.widget(index) is self.plus_widget:
-            self._open_new_default_tab()
-
-    def _on_tab_moved(self, from_index: int, to_index: int):
-        keep_plus_tab_last(self.tabs, self.plus_widget)
 
     def _on_tab_url_changed(self, webview, url: QUrl):
         fragment = url.fragment()
@@ -569,16 +590,18 @@ class IABrowser(QMainWindow):
             return
         if webview is not self.current_webview():
             return
-        self.current_url = url.toString()
-        self.address_bar.setText("" if self.current_url == "about:blank" else self.current_url)
-        self._refresh_collection_icon(self.current_url)
+        sync_address_bar(
+            self.tabs, webview, url, self.address_bar,
+            plus_widget=self.plus_widget,
+            extra_callback=self._refresh_collection_icon,
+        )
 
     def _toggle_devtools(self):
         default_id = self.profile_manager.get_default_profile_id()
         window = TabbedPopupWindow(
             self._get_qt_profile(default_id),
-            folder_view_handler=self._render_folder_view,
-            file_view_handler=self._render_file_view,
+            folder_view_handler=folder_viewer.render_folder_view,
+            file_view_handler=folder_viewer.render_file_view,
             special_local_handler=self.handle_special_local_file,
         )
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -596,43 +619,27 @@ class IABrowser(QMainWindow):
         window.raise_()
         window.activateWindow()
 
-    def _on_tab_title_changed(self, webview, title: str):
-        update_tab_title(self.tabs, webview, title)
-
-    def _on_tab_icon_changed(self, webview, icon):
-        update_tab_icon(self.tabs, webview, icon)
-
     def _open_new_default_tab(self):
         """Botón '+ Tab': siempre abre con el perfil Default,
         independientemente de cuál esté seleccionado en el combo."""
         return self._add_tab()
 
     def _close_tab(self, index: int):
-        if self.tabs.widget(index) is self.plus_widget:
-            return
-
-        widget = self.tabs.widget(index)
-        self.tab_data.pop(id(widget), None)
-        self.tabs.removeTab(index)
-        if isinstance(widget, VideoTab):
-            widget.stop()
-        widget.deleteLater()
-
-        if self.tabs.count() <= 1:
-            self._open_new_default_tab()
+        close_shared_tab(
+            self.tabs,
+            index,
+            self.plus_widget,
+            before_delete=lambda widget: (
+                self.tab_data.pop(id(widget), None),
+                widget.stop() if isinstance(widget, VideoTab) else None,
+            ),
+            ensure_tab=self._open_new_default_tab,
+        )
         self.session_autosaver.schedule()
 
     def current_webview(self) -> QWebEngineView | None:
         """Return active web tab, never the '+' placeholder widget."""
-        current = self.tabs.currentWidget()
-        if isinstance(current, QWebEngineView):
-            return current
-
-        for index in range(self.tabs.count() - 1, -1, -1):
-            widget = self.tabs.widget(index)
-            if isinstance(widget, QWebEngineView):
-                return widget
-        return None
+        return active_tab(self.tabs, self.plus_widget)
 
     def _on_tab_changed(self, index: int):
         """Al cambiar de pestaña, sincroniza el combo de perfiles y la
@@ -646,24 +653,14 @@ class IABrowser(QMainWindow):
         self.current_profile_id = meta.get("profile_id", self.current_profile_id)
         self._highlight_active_profile()
 
-        self.current_url = webview.url().toString()
-        self.address_bar.setText("" if self.current_url == "about:blank" else self.current_url)
-        self._refresh_collection_icon(self.current_url)
+        sync_address_bar(
+            self.tabs, webview, webview.url(), self.address_bar,
+            plus_widget=self.plus_widget,
+            extra_callback=self._refresh_collection_icon,
+        )
+    
     def _on_address_bar_enter(self, text: str):
         self.load_url(text)
-
-    def _on_url_changed(self, url: QUrl):
-        webview = self.sender()
-        if webview is not self.current_webview():
-            return
-        self.current_url = url.toString()
-        self.address_bar.setText("" if self.current_url == "about:blank" else self.current_url)
-
-    def _on_title_changed(self, title: str):
-        webview = self.sender()
-        index = self.tabs.indexOf(webview)
-        if index >= 0:
-            self.tabs.setTabText(index, title[:30])
 
     # ------------------------------------------------------------------
     # Menu
@@ -694,21 +691,6 @@ class IABrowser(QMainWindow):
         website_action.triggered.connect(self._open_website_tools)
         view_menu.addAction(website_action)
 
-        zoom_in = QAction("Aumentar zoom", self)
-        zoom_in.setShortcut(QKeySequence.StandardKey.ZoomIn)
-        zoom_in.triggered.connect(self._zoom_in)
-        view_menu.addAction(zoom_in)
-
-        zoom_out = QAction("Disminuir zoom", self)
-        zoom_out.setShortcut(QKeySequence.StandardKey.ZoomOut)
-        zoom_out.triggered.connect(self._zoom_out)
-        view_menu.addAction(zoom_out)
-
-        reset_zoom = QAction("Resetear zoom", self)
-        reset_zoom.setShortcut("Ctrl+0")
-        reset_zoom.triggered.connect(self._reset_zoom)
-        view_menu.addAction(reset_zoom)
-
     def _open_website_tools(self):
         webview = self.current_webview()
         initial_url = webview.url().toString() if webview else ""
@@ -723,10 +705,7 @@ class IABrowser(QMainWindow):
     # ------------------------------------------------------------------
 
     def load_url(self, url: str):
-        target = address_to_url(url)
-        if target is None:
-            return
-        self.current_webview().setUrl(target)
+        navigate_view(self.current_webview, url)
 
     def go_home(self):
         webview = self.current_webview()
@@ -819,12 +798,6 @@ class IABrowser(QMainWindow):
                 local_viewer.render_error(local_path, f"Error al procesar el archivo: {exc}"),
                 QUrl.fromLocalFile(local_path),
             )
-
-    def _render_folder_view(self, page, folder_path: str):
-        folder_viewer.render_folder_view(page, folder_path)
-
-    def _render_file_view(self, page, file_path: str):
-        folder_viewer.render_file_view(page, file_path)
 
     def _resolve_target_folder(self, tab_meta: dict) -> tuple[str, str]:
         """Devuelve (carpeta, etiqueta) según: primero la Colección de la
@@ -1402,29 +1375,6 @@ class IABrowser(QMainWindow):
         if confirm == QMessageBox.StandardButton.Yes:
             self.collection_manager.delete_collection(collection_id)
             self._load_collections_list()
-
-    # ------------------------------------------------------------------
-    # Zoom (persistido en el perfil de la pestaña activa)
-    # ------------------------------------------------------------------
-
-    def _active_profile_id_for_zoom(self) -> str:
-        webview = self.current_webview()
-        data = self.tab_data.get(id(webview), {})
-        return data.get("profile_id", self.current_profile_id)
-
-    def _zoom_in(self):
-        factor = self.current_webview().zoomFactor() + 0.1
-        self.current_webview().setZoomFactor(factor)
-        self.profile_manager.update_profile(self._active_profile_id_for_zoom(), zoom=factor)
-
-    def _zoom_out(self):
-        factor = self.current_webview().zoomFactor() - 0.1
-        self.current_webview().setZoomFactor(factor)
-        self.profile_manager.update_profile(self._active_profile_id_for_zoom(), zoom=factor)
-
-    def _reset_zoom(self):
-        self.current_webview().setZoomFactor(1.0)
-        self.profile_manager.update_profile(self._active_profile_id_for_zoom(), zoom=1.0)
 
     def closeEvent(self, event):
         self._save_session()
