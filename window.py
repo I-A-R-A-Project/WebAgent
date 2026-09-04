@@ -13,8 +13,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QToolBar, QTabWidget,
-    QMessageBox, QDialog, QLabel, QInputDialog, QFileDialog, QMenu, QComboBox,
-    QTreeWidget, QTreeWidgetItem
+    QMessageBox, QLabel, QFileDialog, QComboBox, QTreeWidget
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEngineDownloadRequest
@@ -22,10 +21,9 @@ from PyQt6.QtCore import Qt, QUrl, QMimeData, QEvent
 from PyQt6.QtGui import QAction, QKeySequence, QKeyEvent, QShortcut
 
 from file_ops import GitVersioning
-from profiles import ProfileManager, NewProfileDialog
-from collections_manager import CollectionManager, NewCollectionDialog, SaveToCollectionDialog
+from profiles import ProfileManager, ProfileWindowMixin
+from collections_manager import CollectionManager, CollectionWindowMixin
 from downloads import DownloadDialog
-from ai_manager import AIAgentsDialog
 from scripts.website_tools.dialogs import WebsiteToolsDialog
 from new_tab_page import render_new_tab_page
 from task_manager import TaskManager
@@ -33,8 +31,8 @@ from agent_console import AgentConsolePanel
 from web_common.json_store import SidebarAppsStore
 from web_common.navbar import BasicNavbar, bind_navigation, save_web_page
 from web_common.navigation import (
-    active_tab, adjust_zoom, navigate_view, open_plus_tab, set_zoom,
-    sync_address_bar,
+    active_tab, adjust_zoom, handle_tab_changed, navigate_view, new_tab_page,
+    open_default_tab, open_plus_tab, set_zoom, sync_address_bar,
 )
 from web_common.session import (
     load_tab_session,
@@ -43,12 +41,19 @@ from web_common.session import (
     save_tab_session,
 )
 from web_common.sidebar import AppPanelOverlay, SidebarContainer, SidebarRail
-from web_common import local_viewer
+from web_common.local_navigation import (
+    handle_special_local_file as dispatch_special_local_file,
+    open_local_file as choose_local_file,
+    open_local_folder as choose_local_folder,
+    open_local_target,
+    replace_tab_with_epub,
+)
 from web_common.downloader_handoff import handoff_url_to_downloader
 from web_common.tabs import (
     VIDEO_EXTS, UnifiedWebTab, TabbedPopupWindow,
     add_plus_tab, configure_tab_widget, prepare_tab_widget,
-    close_tab as close_shared_tab, update_tab_icon, update_tab_title,
+    close_tab as close_shared_tab, keep_plus_tab_last, update_tab_icon,
+    update_tab_title,
 )
 from web_common.media_tabs import open_video_tab as add_video_tab
 from web_common.video_tab import VideoTab
@@ -57,7 +62,7 @@ from web_common import folder_viewer
 from web_common.web_profiles import build_web_profile
 
 
-class IABrowser(QMainWindow):
+class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
     """Navegador con pestañas, perfiles y Colecciones."""
 
     def __init__(self):
@@ -291,26 +296,6 @@ class IABrowser(QMainWindow):
                 f"⚠ {filename} guardado, pero no se pudo commitear (sin cambios o error de git)", 6000
             )
 
-    def _activate_profile(self, profile_id: str, open_home: bool = False):
-        """Cambia el perfil activo: cierra las pestañas y abre una nueva
-        con el cache/sesión del nuevo perfil."""
-        data = self.profile_manager.get_profile(profile_id)
-        if not data:
-            return
-
-        self.current_profile_id = profile_id
-
-        while self.tabs.count() > 0:
-            widget = self.tabs.widget(0)
-            self.tab_data.pop(id(widget), None)
-            self.tabs.removeTab(0)
-
-        self._add_tab()
-        if open_home:
-            self.load_url(data["home_url"])
-        self.current_webview().setZoomFactor(data.get("zoom", 1.0))
-        self._highlight_active_profile()
-
     # ------------------------------------------------------------------
     # UI setup
     # ------------------------------------------------------------------
@@ -362,12 +347,22 @@ class IABrowser(QMainWindow):
         self.rail.rebuild(self.sidebar_apps_store.all(), self.app_panel.active_app_id)
 
     def _handle_new_window_request(self, request):
-        webview = self._add_tab()
-        request.openIn(webview.page())
+        request.openIn(new_tab_page(self._add_tab))
 
     def _setup_sidebar(self, parent_layout):
         """Sidebar con Perfiles y Colecciones."""
         sidebar_layout = QVBoxLayout()
+
+        # --- Perfil activo ---
+        profile_label = QLabel("👤 Perfil")
+        sidebar_layout.addWidget(profile_label)
+
+        self.profile_selector = QComboBox()
+        self.profile_selector.setToolTip("Cambiar el perfil del navegador")
+        self.profile_selector.currentIndexChanged.connect(
+            self._on_profile_selector_changed
+        )
+        sidebar_layout.addWidget(self.profile_selector)
 
         # --- Colecciones ---
         collections_label = QLabel("🗂 Colecciones")
@@ -481,7 +476,12 @@ class IABrowser(QMainWindow):
     # Tabs
     # ------------------------------------------------------------------
 
-    def _add_tab(self, profile_id: str | None = None, collection_id: str | None = None):
+    def _add_tab(
+        self,
+        profile_id: str | None = None,
+        collection_id: str | None = None,
+        insert_index: int | None = None,
+    ):
         """Agrega una pestaña usando el perfil indicado o Default."""
         profile_id = profile_id or self.profile_manager.get_default_profile_id()
         qt_profile = self._get_qt_profile(profile_id)
@@ -505,7 +505,12 @@ class IABrowser(QMainWindow):
 
         self.tab_data[id(webview)] = {"profile_id": profile_id, "collection_id": collection_id}
 
-        insert_at = self.tabs.indexOf(self.plus_widget)
+        last_index = self.tabs.indexOf(self.plus_widget)
+        insert_at = (
+            max(0, min(insert_index, last_index))
+            if insert_index is not None and last_index >= 0
+            else last_index
+        )
         tab_index = self.tabs.insertTab(insert_at, webview, "Nueva pestaña")
         self.tabs.setCurrentIndex(tab_index)
         task_manager = TaskManager(profile_id)
@@ -517,7 +522,7 @@ class IABrowser(QMainWindow):
         return webview
 
     def _handle_new_tab_request(self):
-        return self._add_tab().page()
+        return new_tab_page(self._add_tab)
 
     def _on_tab_url_changed(self, webview, url: QUrl):
         fragment = url.fragment()
@@ -624,7 +629,7 @@ class IABrowser(QMainWindow):
     def _open_new_default_tab(self):
         """Botón '+ Tab': siempre abre con el perfil Default,
         independientemente de cuál esté seleccionado en el combo."""
-        return self._add_tab()
+        return open_default_tab(self._add_tab)
 
     def _close_tab(self, index: int):
         close_shared_tab(
@@ -646,20 +651,21 @@ class IABrowser(QMainWindow):
     def _on_tab_changed(self, index: int):
         """Al cambiar de pestaña, sincroniza el combo de perfiles y la
         barra de dirección con la pestaña recién seleccionada."""
-        if index < 0:
-            return
-        webview = self.tabs.widget(index)
-        if webview is None or webview is self.plus_widget:
-            return
-        meta = self.tab_data.get(id(webview), {})
-        self.current_profile_id = meta.get("profile_id", self.current_profile_id)
-        self._highlight_active_profile()
+        def sync_tab(webview):
+            meta = self.tab_data.get(id(webview), {})
+            self.current_profile_id = meta.get(
+                "profile_id", self.current_profile_id
+            )
+            self._select_profile_in_sidebar(self.current_profile_id)
+            self._highlight_active_profile()
+            self.current_url = webview.url().toString()
+            sync_address_bar(
+                self.tabs, webview, webview.url(), self.address_bar,
+                plus_widget=self.plus_widget,
+                extra_callback=self._refresh_collection_icon,
+            )
 
-        sync_address_bar(
-            self.tabs, webview, webview.url(), self.address_bar,
-            plus_widget=self.plus_widget,
-            extra_callback=self._refresh_collection_icon,
-        )
+        handle_tab_changed(self.tabs, index, self.plus_widget, sync_tab)
     
     def _on_address_bar_enter(self, text: str):
         self.load_url(text)
@@ -734,8 +740,19 @@ class IABrowser(QMainWindow):
         )
         new_webview.setUrl(QUrl(file_url))
 
+    def open_local_file(self):
+        return choose_local_file(self, self._open_local_path_in_new_tab)
+
+    def open_local_folder(self):
+        return choose_local_folder(self, self._open_local_path_in_new_tab)
+
+    def _open_local_path_in_new_tab(self, path):
+        webview = self._add_tab()
+        webview.setUrl(QUrl.fromLocalFile(path))
+        return webview
+
     def handle_special_local_file(self, tab, local_path):
-        local_viewer.handle_special_local_file(
+        return dispatch_special_local_file(
             tab,
             local_path,
             video_extensions=VIDEO_EXTS,
@@ -747,7 +764,7 @@ class IABrowser(QMainWindow):
 
     def _open_local_target(self, tab, local_path):
         cache_dir = self.profile_manager.base_dir / "archives_cache"
-        local_viewer.open_local_target(
+        return open_local_target(
             tab,
             local_path,
             cache_dir,
@@ -755,37 +772,36 @@ class IABrowser(QMainWindow):
         )
 
     def _replace_tab_with_epub(self, tab, local_path, cache_dir):
-        epub = EpubTab(
-            tab.page().profile(),
+        def create_epub(source_tab, path, cache):
+            return EpubTab(
+                source_tab.page().profile(),
+                path,
+                cache_dir=cache,
+                parent=self,
+            )
+
+        def preserve_metadata(source_tab, epub):
+            metadata = self.tab_data.pop(id(source_tab), {})
+            self.tab_data[id(epub)] = {
+                "profile_id": metadata.get("profile_id", self.current_profile_id),
+                "collection_id": metadata.get("collection_id"),
+            }
+
+        return replace_tab_with_epub(
+            tab,
+            self.tabs,
             local_path,
-            cache_dir=cache_dir,
-            parent=self,
+            cache_dir,
+            epub_factory=create_epub,
+            on_replaced=preserve_metadata,
         )
-        index = self.tabs.indexOf(tab)
-        metadata = self.tab_data.pop(id(tab), {})
-        self.tabs.removeTab(index)
-        self.tab_data[id(epub)] = {
-            "profile_id": metadata.get("profile_id", self.current_profile_id),
-            "collection_id": metadata.get("collection_id"),
-        }
-        self.tabs.insertTab(index, epub, epub.title())
-        self.tabs.setCurrentIndex(index)
-        tab.deleteLater()
 
     def _resolve_target_folder(self, tab_meta: dict) -> tuple[str, str]:
-        """Devuelve (carpeta, etiqueta) según: primero la Colección de la
-        pestaña (si tiene carpeta propia), sino la carpeta del perfil."""
-        collection_id = tab_meta.get("collection_id")
-        if collection_id:
-            collection = self.collection_manager.get_collection(collection_id)
-            if collection and collection.get("download_dir"):
-                return collection["download_dir"], f"Colección '{collection['name']}'"
-
-        profile_id = tab_meta.get("profile_id", self.current_profile_id)
-        profile_data = self.profile_manager.get_profile(profile_id)
-        if profile_data:
-            return self.profile_manager.get_files_dir(), "carpeta común de archivos"
-        return str(Path.home()), "carpeta personal"
+        return self.collection_manager.resolve_target_folder(
+            tab_meta,
+            self.profile_manager,
+            self.current_profile_id,
+        )
 
     def _copy_file_to_folder(self, filepath: str, target_dir: str, context_label: str, silent: bool = False):
         src = Path(filepath)
@@ -849,506 +865,6 @@ class IABrowser(QMainWindow):
             10000,
         )
 
-    # ------------------------------------------------------------------
-    # Perfiles: UI
-    # ------------------------------------------------------------------
-
-    def _load_profiles_list(self):
-        """Actualiza el estado del perfil activo sin mostrarlo en la sidebar."""
-        self._highlight_active_profile()
-
-    def _highlight_active_profile(self):
-        data = self.profile_manager.get_profile(self.current_profile_id)
-        if data:
-            git_txt = " · Git ✅" if data.get("git_versioning") else ""
-            self.setWindowTitle(f"IA Browser — {data['name']}")
-
-    def _open_ai_manager(self, profile_id: str):
-        profile = self.profile_manager.get_profile(profile_id)
-        if not profile:
-            return
-        folder = self.profile_manager.get_files_dir()
-        Path(folder).mkdir(parents=True, exist_ok=True)
-        dialog = AIAgentsDialog(
-            self,
-            folder,
-            profile_id=profile_id,
-            profile_ids=[p["id"] for p in self.profile_manager.profiles],
-            profile_names={p["id"]: p["name"] for p in self.profile_manager.profiles},
-            profile_changed_handler=self._on_agent_profile_changed,
-            new_profile_handler=self._create_profile_dialog,
-            rename_profile_handler=self._rename_profile,
-            delete_profile_handler=self._delete_profile,
-            folder_changed_handler=self._change_shared_folder,
-            git_changed_handler=self._set_shared_git,
-            auth_url_handler=self._open_copilot_auth_url,
-            auth_success_handler=self._close_copilot_auth_tab,
-        )
-        dialog.setModal(False)
-        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self._agent_dialogs.append(dialog)
-        dialog.destroyed.connect(
-            lambda _object=None, item=dialog: (
-                self._agent_dialogs.remove(item)
-                if item in self._agent_dialogs else None
-            )
-        )
-        dialog.show()
-        dialog.raise_()
-        dialog.activateWindow()
-
-    def _on_agent_profile_changed(self, profile_id):
-        if profile_id:
-            self.statusBar().showMessage(
-                "Perfil de configuración cambiado; las pestañas normales usan Default.",
-                4000,
-            )
-
-    def _change_shared_folder(self):
-        directory = QFileDialog.getExistingDirectory(
-            self, "Seleccionar carpeta común de archivos",
-            self.profile_manager.get_files_dir(),
-        )
-        if directory:
-            self.profile_manager.set_files_dir(directory)
-            for profile_id, qt_profile in self.web_engine_profiles.items():
-                try:
-                    qt_profile.setDownloadPath(directory)
-                except AttributeError:
-                    pass
-            self._highlight_active_profile()
-
-    def _set_shared_git(self, enabled: bool):
-        if enabled and not GitVersioning.is_available():
-            QMessageBox.warning(self, "Git no encontrado", "No se encontró 'git' en el sistema.")
-            return
-        for profile in self.profile_manager.profiles:
-            profile["git_versioning"] = bool(enabled)
-        self.profile_manager.save_profiles()
-        if enabled:
-            GitVersioning.ensure_repo(self.profile_manager.get_files_dir())
-        self._highlight_active_profile()
-
-    def _open_copilot_auth_url(self, url: str, profile_id: str, code: str = ""):
-        """Open Copilot device authorization inside matching IA profile."""
-        webview = self._add_tab(profile_id=profile_id)
-        webview._copilot_auth_code = code
-        webview.loadFinished.connect(
-            lambda ok, view=webview, expected=code: self._fill_copilot_code(
-                view, expected, ok
-            )
-        )
-        webview.setUrl(QUrl(url))
-        self.statusBar().showMessage(
-            f"Autenticación de Copilot abierta en el perfil {profile_id}. "
-            "Completá el código mostrado por Copilot.",
-            10000,
-        )
-
-    def _fill_copilot_code(self, webview, code: str, ok: bool):
-        if not ok or not code:
-            return
-        script = f"""
-            (() => {{
-            const code = {json.dumps(code)};
-            const input = document.querySelector(
-                'input[name="user_code"], input[id*="code" i], input[autocomplete="one-time-code"], input[type="text"]'
-            );
-            if (!input) return false;
-            const setter = Object.getOwnPropertyDescriptor(
-                HTMLInputElement.prototype, 'value'
-            ).set;
-            setter.call(input, code);
-            input.dispatchEvent(new Event('input', {{bubbles: true}}));
-            input.dispatchEvent(new Event('change', {{bubbles: true}}));
-            const form = input.form;
-            const button = form?.querySelector('button[type="submit"], input[type="submit"]')
-                || [...document.querySelectorAll('button')].find(item => /continue|authorize|submit/i.test(item.innerText));
-            if (button) button.click();
-            else if (form) form.submit();
-            return true;
-            }})()
-            """
-        webview.page().runJavaScript(script)
-
-    def _close_copilot_auth_tab(self, profile_id: str):
-        for index in range(self.tabs.count() - 1, -1, -1):
-            widget = self.tabs.widget(index)
-            if getattr(widget, "_copilot_auth_code", None) is not None:
-                meta = self.tab_data.get(id(widget), {})
-                if meta.get("profile_id") == profile_id:
-                    self.tabs.removeTab(index)
-                    widget.deleteLater()
-                    return
-
-    def _toggle_profile_git(self, profile_id: str):
-        data = self.profile_manager.get_profile(profile_id)
-        if not data:
-            return
-        new_value = not data.get("git_versioning", False)
-        if new_value and not GitVersioning.is_available():
-            QMessageBox.warning(self, "Git no encontrado", "No se encontró 'git' en el sistema.")
-            return
-        self.profile_manager.update_profile(profile_id, git_versioning=new_value)
-        if new_value:
-            GitVersioning.ensure_repo(self.profile_manager.get_files_dir())
-            if not GitVersioning.check_identity(self.profile_manager.get_files_dir()):
-                self._set_git_warning(
-                    "⚠ Git no tiene user.name/user.email configurados: los commits "
-                    "no se van a guardar hasta que los configures."
-                )
-            else:
-                self._clear_git_warning()
-                self.statusBar().showMessage(f"Git activado para el perfil '{data['name']}'", 5000)
-        else:
-            self.statusBar().showMessage(f"Git desactivado para el perfil '{data['name']}'", 5000)
-
-    def _rename_profile(self, profile_id: str):
-        data = self.profile_manager.get_profile(profile_id)
-        if not data:
-            return
-        new_name, ok = QInputDialog.getText(
-            self, "Cambiar nombre", "Nuevo nombre del perfil:", text=data["name"]
-        )
-        new_name = new_name.strip()
-        if ok and new_name:
-            self.profile_manager.rename_profile(profile_id, new_name)
-            self._load_profiles_list()
-
-    def _create_profile_dialog(self):
-        dialog = NewProfileDialog(self, default_dir=str(Path.home() / "Downloads"))
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            name, _files_dir, git_versioning = dialog.get_values()
-            if not name:
-                QMessageBox.warning(self, "Aviso", "El perfil necesita un nombre")
-                return
-            files_dir = self.profile_manager.get_files_dir()
-            if git_versioning and not GitVersioning.is_available():
-                QMessageBox.warning(
-                    self, "Git no encontrado",
-                    "No se encontró 'git' en el sistema. Se creará el perfil "
-                    "igual, pero sin versionado hasta que instales git.",
-                )
-
-            shared_git = any(p.get("git_versioning") for p in self.profile_manager.profiles)
-            new_profile = self.profile_manager.create_profile(name, files_dir, shared_git)
-            self._load_profiles_list()
-            self._open_new_default_tab()
-            if git_versioning and not GitVersioning.check_identity(files_dir):
-                self._set_git_warning(
-                    "⚠ Git no tiene user.name/user.email configurados: los commits "
-                    "no se van a guardar hasta que los configures."
-                )
-
-    def _delete_profile(self, profile_id: str):
-        data = self.profile_manager.get_profile(profile_id)
-        if not data:
-            return
-        if data.get("is_default"):
-            QMessageBox.information(self, "Aviso", "El perfil Default no se puede eliminar.")
-            return
-        confirm = QMessageBox.question(
-            self, "Eliminar perfil",
-            f"¿Eliminar el perfil '{data['name']}'? Esto no borra los archivos descargados, "
-            "solo la sesión/cache del navegador.",
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
-            return
-
-        was_active = profile_id == self.current_profile_id
-        if not self.profile_manager.delete_profile(profile_id):
-            QMessageBox.warning(self, "Aviso", "No se pudo eliminar el perfil")
-            return
-
-        self.web_engine_profiles.pop(profile_id, None)
-
-        # Cerrar las pestañas que usaban el perfil eliminado (ya no es válido)
-        for i in reversed(range(self.tabs.count())):
-            widget = self.tabs.widget(i)
-            meta = self.tab_data.get(id(widget), {})
-            if meta.get("profile_id") == profile_id:
-                self.tab_data.pop(id(widget), None)
-                self.tabs.removeTab(i)
-
-        self._load_profiles_list()
-
-        if self.tabs.count() == 0:
-            fallback_id = self.profile_manager.get_default_profile_id()
-            self._add_tab()
-            data = self.profile_manager.get_profile(fallback_id)
-            if data:
-                self.load_url(data["home_url"])
-
-        if was_active:
-            widget = self.current_webview()
-            meta = self.tab_data.get(id(widget), {})
-            self.current_profile_id = meta.get("profile_id", self.profile_manager.get_default_profile_id())
-            self._highlight_active_profile()
-
-    # ------------------------------------------------------------------
-    # Colecciones: UI
-    # ------------------------------------------------------------------
-
-    def _load_collections_list(self):
-        """Repuebla el árbol de Colecciones: cada Colección es un nodo
-        desplegable con sus marcadores como hijos, más un último hijo
-        para acceder/asignar su carpeta de descarga."""
-        expanded_ids = {
-            self.collections_tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)["id"]
-            for i in range(self.collections_tree.topLevelItemCount())
-            if self.collections_tree.topLevelItem(i).isExpanded()
-        }
-
-        self.collections_tree.clear()
-        for c in self.collection_manager.collections:
-            top = QTreeWidgetItem([f"🗂 {c['name']} ({len(c['items'])})"])
-            top.setData(0, Qt.ItemDataRole.UserRole, {"type": "collection", "id": c["id"]})
-
-            for it in c["items"]:
-                profile = self.profile_manager.get_profile(it["profile_id"])
-                pname = profile["name"] if profile else "?"
-                child = QTreeWidgetItem([f"⭐ {it['title']}  —  [{pname}]"])
-                child.setData(0, Qt.ItemDataRole.UserRole, {
-                    "type": "bookmark", "collection_id": c["id"],
-                    "url": it["url"], "profile_id": it["profile_id"],
-                })
-                top.addChild(child)
-
-            download_dir = c.get("download_dir")
-            folder_label = f"📁 Carpeta: {Path(download_dir).name}" if download_dir else "📁 Asignar carpeta de descarga..."
-            folder_child = QTreeWidgetItem([folder_label])
-            folder_child.setData(0, Qt.ItemDataRole.UserRole, {"type": "folder", "collection_id": c["id"]})
-            f = folder_child.font(0)
-            f.setItalic(True)
-            folder_child.setFont(0, f)
-            top.addChild(folder_child)
-
-            self.collections_tree.addTopLevelItem(top)
-            top.setExpanded(c["id"] in expanded_ids)
-
-    def _create_collection_dialog(self):
-        dialog = NewCollectionDialog(self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        name, download_dir, git_versioning = dialog.get_values()
-        if not name:
-            QMessageBox.warning(self, "Aviso", "La Colección necesita un nombre")
-            return
-        if git_versioning and not GitVersioning.is_available():
-            QMessageBox.warning(
-                self, "Git no encontrado",
-                "No se encontró 'git' en el sistema. Se creará la Colección "
-                "igual, pero sin versionado hasta que instales git.",
-            )
-        self.collection_manager.create_collection(name, download_dir, git_versioning)
-        self._load_collections_list()
-        if git_versioning and download_dir and not GitVersioning.check_identity(download_dir):
-            self._set_git_warning(
-                "⚠ Git no tiene user.name/user.email configurados: los commits "
-                "no se van a guardar hasta que los configures."
-            )
-
-    def _save_current_to_collection(self):
-        webview = self.current_webview()
-        if not webview or not self.current_url:
-            QMessageBox.warning(self, "Aviso", "No hay página cargada")
-            return
-
-        title = self.tabs.tabText(self.tabs.currentIndex())
-        data = self.tab_data.get(id(webview), {})
-        profile_id = data.get("profile_id", self.current_profile_id)
-
-        dialog = SaveToCollectionDialog(
-            self,
-            self.collection_manager.collections,
-            current_url=self.current_url,
-            collection_manager=self.collection_manager
-        )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        collection_id, new_name = dialog.get_values()
-        if collection_id is None:
-            if not new_name:
-                QMessageBox.warning(self, "Aviso", "La Colección necesita un nombre")
-                return
-            collection = self.collection_manager.create_collection(new_name)
-            collection_id = collection["id"]
-
-        self.collection_manager.add_item(collection_id, self.current_url, title, profile_id)
-        self._load_collections_list()
-        self._refresh_collection_icon(self.current_url)
-        self.statusBar().showMessage("Página agregada a la Colección", 4000)
-
-    def _refresh_collection_icon(self, url: str):
-        """Actualiza el ícono de colección (☆/★) según si la URL está en alguna colección."""
-        is_in_collection = False
-        for collection in self.collection_manager.collections:
-            col_data = self.collection_manager.get_collection(collection["id"])
-            if col_data and any(item["url"] == url for item in col_data.get("items", [])):
-                is_in_collection = True
-                break
-        
-        self.collection_action.setText("★" if is_in_collection else "☆")
-
-    def _on_collection_tree_item_clicked(self, item: QTreeWidgetItem, column: int):
-        """Maneja los 3 tipos de nodo del árbol: Colección (expande/
-        colapsa), marcador (selecciona la pestaña si ya está abierta, o
-        abre una nueva) o carpeta (abre/asigna la carpeta de descarga)."""
-        data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not data:
-            return
-        kind = data.get("type")
-
-        if kind == "collection":
-            item.setExpanded(not item.isExpanded())
-        elif kind == "bookmark":
-            existing_index = self._find_tab_index(data["url"], data["profile_id"])
-            if existing_index is not None:
-                self.tabs.setCurrentIndex(existing_index)
-                return
-            webview = self._add_tab(collection_id=data["collection_id"])
-            webview.setUrl(QUrl(data["url"]))
-        elif kind == "folder":
-            self._open_collection_folder(data["collection_id"])
-
-    def _find_tab_index(self, url: str, profile_id: str) -> int | None:
-        """Busca una pestaña ya abierta con esa URL exacta y ese perfil.
-        Devuelve su índice, o None si no hay ninguna."""
-        for i in range(self.tabs.count()):
-            widget = self.tabs.widget(i)
-            meta = self.tab_data.get(id(widget), {})
-            if meta.get("profile_id") == profile_id and widget.url().toString() == url:
-                return i
-        return None
-
-    def _open_collection_folder(self, collection_id: str):
-        """Abre la carpeta de descarga de la Colección en una pestaña
-        nueva (file://). Si todavía no tiene una asignada, la pide."""
-        collection = self.collection_manager.get_collection(collection_id)
-        if not collection:
-            return
-
-        download_dir = collection.get("download_dir")
-        if not download_dir:
-            directory = QFileDialog.getExistingDirectory(
-                self, "Carpeta de descarga de la Colección", str(Path.home())
-            )
-            if not directory:
-                return
-            self.collection_manager.set_download_dir(collection_id, directory)
-            self._load_collections_list()
-            download_dir = directory
-
-        Path(download_dir).mkdir(parents=True, exist_ok=True)
-        file_url = QUrl.fromLocalFile(download_dir).toString()
-        webview = self._add_tab(collection_id=collection_id)
-        webview.setUrl(QUrl(file_url))
-
-    def _on_collection_context_menu(self, pos):
-        item = self.collections_tree.itemAt(pos)
-        if not item:
-            return
-        data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not data:
-            return
-        kind = data.get("type")
-
-        if kind == "collection":
-            collection_id = data["id"]
-            collection = self.collection_manager.get_collection(collection_id)
-            git_on = bool(collection and collection.get("git_versioning"))
-
-            menu = QMenu(self)
-            rename_action = menu.addAction("Cambiar nombre...")
-            folder_action = menu.addAction("Carpeta de descarga...")
-            git_action = menu.addAction(
-                "✅ Git: sobrescribir (activado)" if git_on else "☐ Git: sobrescribir (desactivado)"
-            )
-            delete_action = menu.addAction("Eliminar Colección")
-
-            action = menu.exec(self.collections_tree.mapToGlobal(pos))
-            if action == rename_action:
-                self._rename_collection(collection_id)
-            elif action == folder_action:
-                self._pick_collection_folder(collection_id)
-            elif action == git_action:
-                self._toggle_collection_git(collection_id)
-            elif action == delete_action:
-                self._delete_collection(collection_id)
-
-        elif kind == "bookmark":
-            menu = QMenu(self)
-            remove_action = menu.addAction("Quitar de la Colección")
-            action = menu.exec(self.collections_tree.mapToGlobal(pos))
-            if action == remove_action:
-                self.collection_manager.remove_item(data["collection_id"], data["url"])
-                self._load_collections_list()
-
-        elif kind == "folder":
-            menu = QMenu(self)
-            change_action = menu.addAction("Cambiar carpeta de descarga...")
-            action = menu.exec(self.collections_tree.mapToGlobal(pos))
-            if action == change_action:
-                self._pick_collection_folder(data["collection_id"])
-
-    def _toggle_collection_git(self, collection_id: str):
-        collection = self.collection_manager.get_collection(collection_id)
-        if not collection:
-            return
-        new_value = not collection.get("git_versioning", False)
-        if new_value and not GitVersioning.is_available():
-            QMessageBox.warning(self, "Git no encontrado", "No se encontró 'git' en el sistema.")
-            return
-        self.collection_manager.set_git_versioning(collection_id, new_value)
-        if new_value and collection.get("download_dir"):
-            if not GitVersioning.check_identity(collection["download_dir"]):
-                self._set_git_warning(
-                    "⚠ Git no tiene user.name/user.email configurados: los commits "
-                    "no se van a guardar hasta que los configures."
-                )
-            else:
-                self._clear_git_warning()
-                self.statusBar().showMessage(f"Git activado para la Colección '{collection['name']}'", 5000)
-        elif new_value:
-            self.statusBar().showMessage(
-                f"Git activado para '{collection['name']}' — asignale una carpeta de descarga", 6000
-            )
-        else:
-            self.statusBar().showMessage(f"Git desactivado para la Colección '{collection['name']}'", 5000)
-
-    def _rename_collection(self, collection_id: str):
-        collection = self.collection_manager.get_collection(collection_id)
-        if not collection:
-            return
-        new_name, ok = QInputDialog.getText(
-            self, "Cambiar nombre", "Nuevo nombre de la Colección:", text=collection["name"]
-        )
-        new_name = new_name.strip()
-        if ok and new_name:
-            self.collection_manager.rename_collection(collection_id, new_name)
-            self._load_collections_list()
-
-    def _pick_collection_folder(self, collection_id: str):
-        collection = self.collection_manager.get_collection(collection_id)
-        if not collection:
-            return
-        directory = QFileDialog.getExistingDirectory(
-            self, "Carpeta de descarga de la Colección", collection.get("download_dir") or str(Path.home())
-        )
-        if directory:
-            self.collection_manager.set_download_dir(collection_id, directory)
-            self._load_collections_list()
-
-    def _delete_collection(self, collection_id: str):
-        collection = self.collection_manager.get_collection(collection_id)
-        if not collection:
-            return
-        confirm = QMessageBox.question(self, "Eliminar Colección", f"¿Eliminar la Colección '{collection['name']}'?")
-        if confirm == QMessageBox.StandardButton.Yes:
-            self.collection_manager.delete_collection(collection_id)
-            self._load_collections_list()
-
     def closeEvent(self, event):
         self._save_session()
         self.profile_manager.save_profiles()
@@ -1391,7 +907,10 @@ class IABrowser(QMainWindow):
             return False
 
         for t in valid_tabs:
-            webview = self._add_tab(collection_id=t.get("collection_id"))
+            webview = self._add_tab(
+                profile_id=t["profile_id"],
+                collection_id=t.get("collection_id"),
+            )
             restore_tab_metadata(self.tabs, self.tabs.indexOf(webview), t)
             webview.setUrl(QUrl(t["url"]))
 
@@ -1402,8 +921,9 @@ class IABrowser(QMainWindow):
             self.current_profile_id = valid_tabs[-1]["profile_id"]
 
         active_index = session.get("active_index")
-        if isinstance(active_index, int) and self.tabs.count() > 0:
-            self.tabs.setCurrentIndex(max(0, min(active_index, self.tabs.count() - 1)))
+        if isinstance(active_index, int) and valid_tabs:
+            active_index = max(0, min(active_index, len(valid_tabs) - 1))
+            self.tabs.setCurrentIndex(active_index)
             active_widget = self.current_webview()
             active_meta = self.tab_data.get(id(active_widget), {})
             self.current_profile_id = active_meta.get("profile_id", self.current_profile_id)
