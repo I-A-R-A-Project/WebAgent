@@ -55,8 +55,7 @@ from web_common.tabs import (
     close_tab as close_shared_tab, keep_plus_tab_last, update_tab_icon,
     update_tab_title,
 )
-from web_common.media_tabs import open_video_tab as add_video_tab
-from web_common.video_tab import VideoTab
+from web_common.video_tab import VideoTab, open_video_tab as add_video_tab
 from web_common.epub_tab import EpubTab
 from web_common import folder_viewer
 from web_common.web_profiles import build_web_profile
