@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
     QFileDialog, QMessageBox, QTabWidget, QVBoxLayout, QWidget,
 )
+from paths import COPILOT_PROFILES_DIR
 
 from ai_manager import AGENT_DEFS, AGENT_ORDER, AgentConfigStore
 from file_ops import GitVersioning
@@ -75,7 +76,7 @@ class AgentConsolePanel(QWidget):
         environment = QProcessEnvironment.systemEnvironment()
         for name in ("COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "ANYAPI_API_KEY"):
             environment.remove(name)
-        environment.insert("COPILOT_HOME", str(Path.home() / ".ia_browser" / "copilot_profiles" / profile_id))
+        environment.insert("COPILOT_HOME", str(COPILOT_PROFILES_DIR / profile_id))
         environment.insert("BROWSER", "cmd.exe /c exit 0")
         token = config["agents"].get(agent_id, {}).get("auth_token", "")
         if agent_id == "copilot" and token:

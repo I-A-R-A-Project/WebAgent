@@ -1,6 +1,6 @@
-# IA Browser
+# WebAgent
 
-IA Browser es un navegador de escritorio para trabajar con agentes de
+WebAgent es un navegador de escritorio para trabajar con agentes de
 inteligencia artificial desde un entorno controlado. Su objetivo no es ser
 solo un navegador web: cada perfil representa una cuenta separada y mantiene
 sus propias sesiones, archivos, cookies, credenciales de agentes y ramas Git.
@@ -38,15 +38,15 @@ cuenta correspondiente de Copilot, Codex, GitHub, Claude y Gemini. El perfil
 `Default` se usa cuando una Colección no requiere una cuenta específica y no
 se puede eliminar.
 
-Cuando un agente agota tokens, cuota o rate limit, IA Browser puede rotar al
+Cuando un agente agota tokens, cuota o rate limit, WebAgent puede rotar al
 siguiente perfil disponible y reintentar la tarea conservando su contexto.
 Las credenciales, sesiones e historiales de conversación siguen separados
 entre perfiles.
 
-Cuando Git está activo, IA Browser usa `master` para cambios crudos y `main`
+Cuando Git está activo, WebAgent usa `master` para cambios crudos y `main`
 para el trabajo de agentes y cambios revisados.
 
-IA Browser no cambia de rama si hay cambios sin commitear que puedan mezclarse.
+WebAgent no cambia de rama si hay cambios sin commitear que puedan mezclarse.
 Esto evita que una descarga o agente sobrescriba accidentalmente archivos de
 otro perfil.
 
@@ -82,7 +82,7 @@ Cada perfil puede tener una cuenta independiente de:
 - Gemini.
 
 El inicio de sesión se realiza dentro de las pestañas del perfil
-correspondiente. IA Browser no copia cookies ni tokens entre perfiles.
+correspondiente. WebAgent no copia cookies ni tokens entre perfiles.
 
 ### Codex
 
@@ -99,18 +99,18 @@ codex login
 
 ### Copilot
 
-Copilot CLI corre dentro de IA Browser mediante una terminal integrada.
+Copilot CLI corre dentro de WebAgent mediante una terminal integrada.
 
 - Cada perfil usa su propio `COPILOT_HOME` e historial de Copilot.
 - El login usa device flow y abre GitHub en una pestaña del perfil correcto.
-- IA Browser detecta el código de dispositivo y lo completa automáticamente.
+- WebAgent detecta el código de dispositivo y lo completa automáticamente.
 - La pestaña de autenticación se cierra al detectar `Signed in successfully`.
 - Si falta autenticación, el login comienza automáticamente.
 - Si se detecta un límite de cuota, puede rotar al siguiente perfil y reintentar.
 - El prompt recibe estado Git, diff sin commitear y diff del commit reciente.
 
 La separación de credenciales depende del almacenamiento usado por Copilot CLI.
-IA Browser no guarda tokens propios ni copia credenciales entre perfiles.
+WebAgent no guarda tokens propios ni copia credenciales entre perfiles.
 
 ### AnyAPI
 
@@ -138,7 +138,7 @@ npm install --global @ast-grep/cli
 ```
 
 El servidor `ast-grep-mcp` también puede configurarse en un cliente MCP para
-que un agente visualice AST y pruebe reglas estructurales. IA Browser no lo
+que un agente visualice AST y pruebe reglas estructurales. WebAgent no lo
 inicia automáticamente.
 
 ## Instalación y ejecución
@@ -155,7 +155,7 @@ Los imports son locales; ejecutar `python main.py` desde la carpeta `IA`.
 ## Archivos y módulos principales
 
 ```text
-IA/
+WebAgent/
 ├── main.py                 # Ventana, pestañas, perfiles y navegación
 ├── profiles.py             # Perfiles aislados y carpeta común de archivos
 ├── collections_manager.py  # Colecciones y marcadores multi-perfil
@@ -236,12 +236,12 @@ respetando `robots.txt`.
 
 También podés abrir **Vista → Website Tools...** desde la interfaz. El diálogo
 precompleta la URL de la pestaña actual, permite elegir el tipo de operación,
-limitar profundidad y páginas, muestra el informe dentro de IA Browser y
+limitar profundidad y páginas, muestra el informe dentro de WebAgent y
 permite guardar el crawl en JSON.
 
 ## Datos persistentes
 
-IA Browser guarda datos en `~/.ia_browser/`:
+WebAgent guarda datos en `%APPDATA%\IARA\WebAgent\`:
 
 ```text
 profiles.json                 # Perfiles y preferencias

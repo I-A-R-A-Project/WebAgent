@@ -1,5 +1,5 @@
 """
-collections_manager.py - "Colecciones" para IA Browser: grupos de
+collections_manager.py - "Colecciones" para WebAgent: grupos de
 marcadores multi-perfil.
 
 Contiene:
@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QUrl
 
 from file_ops import GitVersioning
+from paths import IA_DATA_DIR
 from profiles import ProfileManager
 
 
@@ -39,7 +40,7 @@ class CollectionManager:
     perfiles, cada Colección con su propia carpeta de descarga opcional."""
 
     def __init__(self):
-        self.base_dir = Path.home() / ".ia_browser"
+        self.base_dir = IA_DATA_DIR
         self.base_dir.mkdir(exist_ok=True)
         self.collections_file = self.base_dir / "collections.json"
         self.load_collections()
@@ -141,7 +142,7 @@ class CollectionManager:
 
 
 class CollectionWindowMixin:
-    """Comportamiento de UI de colecciones usado por IA Browser."""
+    """Comportamiento de UI de colecciones usado por WebAgent."""
 
     def _load_collections_list(self):
         expanded_ids = {

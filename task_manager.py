@@ -5,12 +5,14 @@ import os
 import uuid
 from datetime import datetime
 from pathlib import Path
+
+from paths import IA_DATA_DIR
 from urllib.request import Request, urlopen
 
 
 class TaskManager:
     def __init__(self, profile_id: str):
-        self.path = Path.home() / ".ia_browser" / "tasks" / f"{profile_id}.json"
+        self.path = IA_DATA_DIR / "tasks" / f"{profile_id}.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self.tasks = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else []

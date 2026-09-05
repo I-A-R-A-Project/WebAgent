@@ -1,5 +1,5 @@
 """
-ai_manager.py - "Agentes IA" para IA Browser.
+ai_manager.py - "Agentes IA" para WebAgent.
 
 Le permite, para cualquier carpeta versionada con git (perfil o
 Colección), desde un diálogo con pestañas:
@@ -7,7 +7,7 @@ Colección), desde un diálogo con pestañas:
     mano en GitHub (u otro host, pegando su URL HTTPS o SSH — sin
     manejar tokens, usa las credenciales de git ya configuradas en el
     sistema) y configurar una rama "cruda" (donde caen los commits
-    automáticos de IA Browser al descargar archivos) y una rama
+    automáticos de WebAgent al descargar archivos) y una rama
     "limpia" de destino.
   - Codex: revisa/reescribe el historial de la rama cruda y arma
     commits prolijos y descriptivos en la rama limpia.
@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QFont
 
 from file_ops import GitVersioning
+from paths import COPILOT_PROFILES_DIR, IA_DATA_DIR
 
 
 # ======================================================================
@@ -132,7 +133,7 @@ class AgentConfigStore:
     Clave = ruta absoluta de la carpeta."""
 
     def __init__(self):
-        self.base_dir = Path.home() / ".ia_browser"
+        self.base_dir = IA_DATA_DIR
         self.base_dir.mkdir(exist_ok=True)
         self.config_file = self.base_dir / "codex_config.json"
         self.load()
@@ -249,7 +250,7 @@ class AIAgentsDialog(QDialog):
         self.git_changed_handler = git_changed_handler
         self.auth_url_handler = auth_url_handler
         self.auth_success_handler = auth_success_handler
-        self.copilot_home = Path.home() / ".ia_browser" / "copilot_profiles" / self.profile_id
+        self.copilot_home = COPILOT_PROFILES_DIR / self.profile_id
         self.raw_branch = "master"
         self.profile_branch = "main"
         self.config_store = AgentConfigStore()
@@ -328,7 +329,7 @@ class AIAgentsDialog(QDialog):
         for name in ("COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "ANYAPI_API_KEY"):
             environment.remove(name)
         environment.insert("COPILOT_HOME", str(self.copilot_home))
-        # Device flow link is opened by IA Browser, never by system browser.
+        # Device flow link is opened by WebAgent, never by system browser.
         environment.insert("BROWSER", "cmd.exe /c exit 0")
         token = self.config_store.get(self.folder).get("agents", {}).get(agent_id, {}).get("auth_token", "")
         if token:
@@ -368,7 +369,7 @@ class AIAgentsDialog(QDialog):
             QMessageBox.information(self, "Copilot", "Detené el proceso antes de cambiar de perfil.")
             return
         self.profile_id = selected
-        self.copilot_home = Path.home() / ".ia_browser" / "copilot_profiles" / selected
+        self.copilot_home = COPILOT_PROFILES_DIR / selected
         if self.profile_changed_handler:
             self.profile_changed_handler(selected)
 
@@ -928,7 +929,7 @@ class AIAgentsDialog(QDialog):
         self.copilot_rotation_in_progress = True
         self.pending_copilot_retry = True
         self.profile_id = next_profile
-        self.copilot_home = Path.home() / ".ia_browser" / "copilot_profiles" / next_profile
+        self.copilot_home = COPILOT_PROFILES_DIR / next_profile
         self.profile_combo.blockSignals(True)
         self.profile_combo.setCurrentIndex(
             self.profile_combo.findData(next_profile)
@@ -1130,7 +1131,7 @@ class _ConnectRemoteDialog(QDialog):
         hint = QLabel(
             "Usá HTTPS si tenés el credential manager de git configurado (lo habitual "
             "en Windows), o SSH si ya tenés una clave cargada en tu cuenta de GitHub. "
-            "IA Browser no maneja tokens ni contraseñas: usa la autenticación que ya "
+            "WebAgent no maneja tokens ni contraseñas: usa la autenticación que ya "
             "tengas configurada en tu sistema."
         )
         hint.setWordWrap(True)

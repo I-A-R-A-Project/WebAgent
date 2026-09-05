@@ -66,13 +66,17 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("IA Browser")
+        self.setWindowTitle("WebAgent")
         self.setGeometry(100, 100, 1600, 1000)
         self.setAcceptDrops(True)
 
         self.profile_manager = ProfileManager()
         self.collection_manager = CollectionManager()
-        self.sidebar_apps_store = SidebarAppsStore(str(Path.home() / '.minibrowser' / 'sidebar_apps.json'), [])
+        from paths import BROWSER_DATA_DIR
+
+        self.sidebar_apps_store = SidebarAppsStore(
+            str(BROWSER_DATA_DIR / "sidebar_apps.json"), []
+        )
         self.web_engine_profiles: dict[str, QWebEngineProfile] = {}
         self.current_profile_id = self.profile_manager.profiles[0]["id"]
         self.session_file = self.profile_manager.base_dir / "session.json"

@@ -1,4 +1,4 @@
-"""Diálogo Qt para probar las Website Tools desde IA Browser."""
+"""Diálogo Qt para probar las Website Tools desde WebAgent."""
 
 from pathlib import Path
 

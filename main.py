@@ -1,4 +1,4 @@
-"""Punto de entrada de IA Browser."""
+"""Punto de entrada de WebAgent."""
 
 import sys
 
@@ -9,7 +9,7 @@ from window import IABrowser
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("IA Browser")
+    app.setApplicationName("WebAgent")
     app.setApplicationVersion("4.0")
 
     window = IABrowser()

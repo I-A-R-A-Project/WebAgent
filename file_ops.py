@@ -1,5 +1,5 @@
 """
-file_ops.py - Utilidades de archivo para IA Browser.
+file_ops.py - Utilidades de archivo para WebAgent.
 
 Contiene:
   - GitVersioning: versiona con git una carpeta de descargas, en vez

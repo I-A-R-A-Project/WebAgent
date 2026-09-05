@@ -1,5 +1,5 @@
 ﻿"""
-profiles.py - Perfiles de navegador para IA Browser.
+profiles.py - Perfiles de navegador para WebAgent.
 
 Contiene:
   - ProfileManager: maneja perfiles persistentes e independientes
@@ -20,9 +20,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QUrl
 
 from file_ops import GitVersioning
+from paths import BROWSER_DATA_DIR, IA_DATA_DIR
 from web_common.tabs import keep_plus_tab_last
 
-MINIBROWSER_PROFILE_DIR = Path.home() / '.minibrowser' / 'profile'
+MINIBROWSER_PROFILE_DIR = BROWSER_DATA_DIR / "profile"
 
 
 # ======================================================================
@@ -39,7 +40,7 @@ class ProfileManager:
     """
 
     def __init__(self):
-        self.base_dir = Path.home() / ".ia_browser"
+        self.base_dir = IA_DATA_DIR
         self.base_dir.mkdir(exist_ok=True)
         self.profiles_dir = self.base_dir / "profiles"
         self.profiles_dir.mkdir(exist_ok=True)
@@ -265,7 +266,7 @@ class ProfileWindowMixin:
     def _highlight_active_profile(self):
         data = self.profile_manager.get_profile(self.current_profile_id)
         if data:
-            self.setWindowTitle(f"IA Browser — {data['name']}")
+            self.setWindowTitle(f"WebAgent — {data['name']}")
 
     def _open_ai_manager(self, profile_id: str):
         from ai_manager import AIAgentsDialog

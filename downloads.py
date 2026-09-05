@@ -1,5 +1,5 @@
 """
-downloads.py - Diálogo de descarga para IA Browser.
+downloads.py - Diálogo de descarga para WebAgent.
 
 DownloadDialog: la descarga arranca sola a una carpeta temporal apenas se
 abre el diálogo. Si es un comprimido y el checkbox de extracción está

@@ -15,7 +15,10 @@ import json
 import sys
 from pathlib import Path
 
-CONFIG_PATH = Path.home() / ".ia_browser" / "codex_config.json"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from paths import IA_DATA_DIR
+
+CONFIG_PATH = IA_DATA_DIR / "codex_config.json"
 
 
 def load_config():
