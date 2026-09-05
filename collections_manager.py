@@ -98,6 +98,50 @@ class CollectionManager:
     def contains_url(self, url: str) -> bool:
         return self.find_collection_for_url(url) is not None
 
+    def rename_collection(self, collection_id: str, new_name: str):
+        collection = self.get_collection(collection_id)
+        if collection:
+            collection["name"] = new_name
+            self.save_collections()
+
+    def set_download_dir(self, collection_id: str, download_dir: str):
+        collection = self.get_collection(collection_id)
+        if collection:
+            collection["download_dir"] = download_dir
+            if collection.get("git_versioning"):
+                GitVersioning.ensure_repo(download_dir)
+            self.save_collections()
+
+    def add_item(self, collection_id: str, url: str, title: str, profile_id: str):
+        collection = self.get_collection(collection_id)
+        if not collection:
+            return
+        collection["items"] = [
+            item for item in collection.get("items", []) if item.get("url") != url
+        ]
+        collection.setdefault("items", []).append({
+            "url": url,
+            "title": title,
+            "profile_id": profile_id,
+            "added": datetime.now().isoformat(),
+        })
+        self.save_collections()
+
+    def remove_item(self, collection_id: str, url: str):
+        collection = self.get_collection(collection_id)
+        if collection:
+            collection["items"] = [
+                item for item in collection.get("items", []) if item.get("url") != url
+            ]
+            self.save_collections()
+
+    def delete_collection(self, collection_id: str):
+        self.collections = [
+            collection for collection in self.collections
+            if collection["id"] != collection_id
+        ]
+        self.save_collections()
+
     def sidebar_entries(self, profile_names: dict[str, str]) -> list[dict]:
         """Devuelve los datos necesarios para renderizar el árbol lateral."""
         entries = []
@@ -394,44 +438,6 @@ class CollectionWindowMixin:
         if confirm == QMessageBox.StandardButton.Yes:
             self.collection_manager.delete_collection(collection_id)
             self._load_collections_list()
-
-    def rename_collection(self, collection_id: str, new_name: str):
-        t = self.get_collection(collection_id)
-        if t:
-            t["name"] = new_name
-            self.save_collections()
-
-    def set_download_dir(self, collection_id: str, download_dir: str):
-        t = self.get_collection(collection_id)
-        if t:
-            t["download_dir"] = download_dir
-            if t.get("git_versioning"):
-                GitVersioning.ensure_repo(download_dir)
-            self.save_collections()
-
-    def add_item(self, collection_id: str, url: str, title: str, profile_id: str):
-        t = self.get_collection(collection_id)
-        if not t:
-            return
-        t["items"] = [i for i in t["items"] if i["url"] != url]
-        t["items"].append({
-            "url": url,
-            "title": title,
-            "profile_id": profile_id,
-            "added": datetime.now().isoformat(),
-        })
-        self.save_collections()
-
-    def remove_item(self, collection_id: str, url: str):
-        t = self.get_collection(collection_id)
-        if t:
-            t["items"] = [i for i in t["items"] if i["url"] != url]
-            self.save_collections()
-
-    def delete_collection(self, collection_id: str):
-        self.collections = [t for t in self.collections if t["id"] != collection_id]
-        self.save_collections()
-
 
 class NewCollectionDialog(QDialog):
     """Dialog para crear una Colección nueva, con carpeta de descarga opcional
