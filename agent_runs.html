@@ -312,6 +312,60 @@
     color:#d6d8e0;
   }
 
+  .diff-section{margin-bottom:16px;}
+  .diff-section-label{
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--muted-2);
+    margin-bottom:6px;
+  }
+  .diff-plain{
+    font-family:var(--mono);
+    font-size:12px;
+    color:var(--muted);
+    white-space:pre-wrap;
+    padding:10px 12px;
+    background:var(--panel);
+    border-radius:6px;
+    border:1px solid var(--border-soft);
+  }
+  .diff-file{
+    border:1px solid var(--border-soft);
+    border-radius:7px;
+    margin-bottom:8px;
+    overflow:hidden;
+    background:#111318;
+  }
+  .diff-file summary{
+    cursor:pointer;
+    padding:7px 12px;
+    background:var(--panel);
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    font-family:var(--mono);
+    font-size:12px;
+    list-style:none;
+  }
+  .diff-file summary::-webkit-details-marker{display:none;}
+  .diff-file-name{color:var(--text);}
+  .diff-file-stats{font-size:11px;display:flex;gap:6px;}
+  .add-count{color:var(--green);}
+  .del-count{color:var(--red);}
+  .diff-body{
+    max-height:440px;
+    overflow:auto;
+    font-family:var(--mono);
+    font-size:12px;
+    line-height:1.55;
+  }
+  .diff-line{padding:0 12px;white-space:pre;}
+  .diff-line.add{background:rgba(89,201,138,.12); color:#a7ecc4;}
+  .diff-line.del{background:rgba(229,99,107,.12); color:#f4b3b8;}
+  .diff-line.hunk{color:var(--amber); background:#241f16;}
+  .diff-line.meta{color:var(--muted-2);}
+  .diff-line.ctx{color:#aeb2c0;}
+
   .footer-stats{
     display:flex;
     gap:22px;
@@ -482,9 +536,11 @@ function parseLog(filename, rawOriginal){
     if(!isNaN(d)) started = d;
   }
 
+  const diffSections = parseDiffSection(raw);
+
   return {
     filename, started, startedStr, cwd, branch, workingTree, taskText,
-    timeline, summary, status,
+    timeline, summary, status, diffSections,
     exitCode, exitLabel,
     changes: changesMatch ? {added:+changesMatch[1], removed:+changesMatch[2]} : null,
     credits: creditsMatch ? {amount:+creditsMatch[1], duration:creditsMatch[2]||null} : null,
@@ -494,6 +550,67 @@ function parseLog(filename, rawOriginal){
     tokensDownDetail: tokensMatch ? tokensMatch[4] : null,
     resumeId: resumeMatch ? resumeMatch[1] : null,
   };
+}
+
+function parseDiffSection(raw){
+  const marker = "\n=== Diff exacto de la ejecución ===\n";
+  const idx = raw.indexOf(marker);
+  if(idx === -1) return null;
+  const text = raw.slice(idx + marker.length);
+
+  const headerRe = /^--- (.+?) ---$/gm;
+  const heads = [];
+  let hm;
+  while((hm = headerRe.exec(text)) !== null){
+    heads.push({label: hm[1], start: hm.index, end: hm.index + hm[0].length});
+  }
+  if(heads.length === 0) return null;
+
+  const sections = [];
+  for(let i=0;i<heads.length;i++){
+    const bodyStart = heads[i].end + 1;
+    const bodyEnd = (i+1 < heads.length) ? heads[i+1].start : text.length;
+    const body = text.slice(bodyStart, bodyEnd).replace(/\n+$/,"").trim();
+    sections.push({label: heads[i].label, body});
+  }
+  return sections.filter(s => s.body.length > 0 || true);
+}
+
+function renderDiffBody(body){
+  if(!body){
+    return `<div class="diff-plain">Sin contenido.</div>`;
+  }
+  if(!/^diff --git /m.test(body)){
+    return `<div class="diff-plain">${escapeHtml(body)}</div>`;
+  }
+  const parts = body.split(/(?=^diff --git )/m).filter(Boolean);
+  return parts.map(renderFileDiff).join("");
+}
+
+function renderFileDiff(chunk){
+  const lines = chunk.split("\n");
+  const headerLine = lines[0] || "";
+  let filePath = headerLine;
+  const fm = headerLine.match(/^diff --git a\/(.+?) b\/(.+)$/);
+  if(fm) filePath = fm[2];
+  let added = 0, removed = 0;
+  const bodyLines = lines.slice(1);
+  const htmlLines = bodyLines.map(l=>{
+    let cls = "ctx";
+    if(l.startsWith("+++") || l.startsWith("---")) cls = "meta";
+    else if(l.startsWith("+")){ cls = "add"; added++; }
+    else if(l.startsWith("-")){ cls = "del"; removed++; }
+    else if(l.startsWith("@@")) cls = "hunk";
+    else if(/^(index |new file|deleted file|similarity|rename|old mode|new mode)/.test(l)) cls = "meta";
+    return `<div class="diff-line ${cls}">${escapeHtml(l) || "&nbsp;"}</div>`;
+  }).join("");
+  return `<details class="diff-file" open>
+    <summary>
+      <span class="diff-file-name">${escapeHtml(filePath)}</span>
+      <span class="diff-file-stats"><span class="add-count">+${added}</span> <span class="del-count">-${removed}</span></span>
+    </summary>
+    <div class="diff-body">${htmlLines}</div>
+  </details>`;
 }
 
 /* ================= APP STATE ================= */
@@ -645,6 +762,17 @@ function renderDetail(){
     <div class="summary-box">${escapeHtml(run.summary)}</div>
   ` : "";
 
+  let diffHtml = "";
+  if(run.diffSections && run.diffSections.length){
+    diffHtml = `<div class="section-label">Diff exacto de la ejecución</div>` +
+      run.diffSections.map(s => `
+        <div class="diff-section">
+          <div class="diff-section-label">${escapeHtml(s.label)}</div>
+          ${renderDiffBody(s.body)}
+        </div>
+      `).join("");
+  }
+
   const footerHtml = `
     <div class="footer-stats">
       ${run.changes ? `<span><b>+${run.changes.added} -${run.changes.removed}</b> líneas</span>` : ""}
@@ -678,6 +806,7 @@ function renderDetail(){
     <div class="timeline">${renderTimeline(run) || '<div class="tl-item tl-note"><p>Sin pasos registrados.</p></div>'}</div>
 
     ${summaryHtml}
+    ${diffHtml}
     ${footerHtml}
   `;
 

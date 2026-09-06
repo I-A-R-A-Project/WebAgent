@@ -54,6 +54,7 @@ class AgentConsolePanel(QWidget):
         self.autorun_process = None
         self.current_output = None
         self._log_file = None
+        self._git_start_head = None
         self._copilot_output_buffer = ""
         self._copilot_login_buffer = ""
         self._copilot_auth_urls_seen = set()
@@ -71,24 +72,24 @@ class AgentConsolePanel(QWidget):
         self.task_edit.setFixedHeight(76)
         self.task_edit.setPlaceholderText("Tarea para el agente... (Shift+Enter para ejecutar)")
         controls.addWidget(self.task_edit, 1)
+        buttons = QVBoxLayout()
         self.run_btn = QPushButton("▶ Ejecutar")
         self.run_btn.clicked.connect(self.run_agent)
-        controls.addWidget(self.run_btn)
+        buttons.addWidget(self.run_btn)
         self.stop_btn = QPushButton("⏹ Detener")
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self.stop_agent)
-        controls.addWidget(self.stop_btn)
-        layout.addLayout(controls)
-
+        buttons.addWidget(self.stop_btn)
         directory_row = QHBoxLayout()
-        directory_row.addWidget(QLabel("Directorio:"))
         self.directory_edit = QLineEdit(self.folder_getter())
         self.directory_edit.setToolTip("Directorio de trabajo de la consola")
-        directory_row.addWidget(self.directory_edit, 1)
-        browse_btn = QPushButton("Elegir...")
+        directory_row.addWidget(self.directory_edit)
+        browse_btn = QPushButton("📁")
         browse_btn.clicked.connect(self._choose_directory)
         directory_row.addWidget(browse_btn)
-        layout.addLayout(directory_row)
+        buttons.addLayout(directory_row)
+        controls.addLayout(buttons)
+        layout.addLayout(controls)
 
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
@@ -105,6 +106,11 @@ class AgentConsolePanel(QWidget):
         log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._log_file = log_dir / f"{timestamp}_{agent_id}.log"
+        self._git_start_head = None
+        if GitVersioning.has_repo(folder):
+            ok, head, _ = GitVersioning.run(folder, ["rev-parse", "HEAD"], timeout=10)
+            if ok:
+                self._git_start_head = head.strip()
         self._write_log(
             f"=== {AGENT_DEFS[agent_id]['short_label']} ===\n"
             f"started: {datetime.now().isoformat()}\n"
@@ -112,6 +118,39 @@ class AgentConsolePanel(QWidget):
             f"command: {command}\n"
             f"task:\n{task}\n\n"
         )
+
+    def _write_git_diff(self):
+        """Guarda en el log el diff exacto producido por la ejecución."""
+        folder = self._working_folder()
+        if not GitVersioning.has_repo(folder):
+            return
+
+        sections = []
+        if self._git_start_head:
+            ok, output, error = GitVersioning.run(
+                folder, ["diff", "--no-ext-diff", "--unified=3", self._git_start_head, "HEAD"],
+                timeout=60,
+            )
+            if ok and output:
+                sections.append(
+                    f"--- Diff de commits ({self._git_start_head[:12]}..HEAD) ---\n{output}"
+                )
+            elif not ok:
+                sections.append(f"--- No se pudo obtener el diff de commits: {error} ---")
+
+        for label, args in (
+            ("Diff sin commitear", ["diff", "--no-ext-diff", "--unified=3"]),
+            ("Diff staged", ["diff", "--cached", "--no-ext-diff", "--unified=3"]),
+        ):
+            ok, output, error = GitVersioning.run(folder, args, timeout=60)
+            if ok and output:
+                sections.append(f"--- {label} ---\n{output}")
+            elif not ok:
+                sections.append(f"--- No se pudo obtener {label.lower()}: {error} ---")
+
+        if not sections:
+            sections.append("--- No hay diff disponible (sin cambios detectados). ---")
+        self._write_log("\n=== Diff exacto de la ejecución ===\n" + "\n\n".join(sections) + "\n")
 
     def _write_log(self, text: str):
         if self._log_file is None:
@@ -367,6 +406,8 @@ class AgentConsolePanel(QWidget):
         command = autorun.get("command", "") if autorun.get("enabled") else ""
         if command:
             self._run_autorun(command)
+        else:
+            self._write_git_diff()
 
     def _run_autorun(self, command):
         if self.autorun_process is not None:
@@ -410,4 +451,5 @@ class AgentConsolePanel(QWidget):
                 "Autorun falló",
                 f"El comando autorun devolvió código {exit_code}. Revisá la salida.",
             )
+        self._write_git_diff()
         self.autorun_process = None
