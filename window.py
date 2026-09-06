@@ -28,6 +28,7 @@ from scripts.website_tools.dialogs import WebsiteToolsDialog
 from new_tab_page import render_new_tab_page
 from task_manager import TaskManager
 from agent_console import AgentConsolePanel
+from agent_runs import render_agent_runs_page
 from package_script_tab import PackageScriptTab
 from web_common.json_store import SidebarAppsStore
 from web_common.navbar import BasicNavbar, bind_navigation, save_web_page
@@ -453,6 +454,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             navbar,
             self.current_webview,
             address_handler=self._on_address_bar_enter,
+            reload_handler=self._reload_current_webview,
             save_handler=lambda: save_web_page(
                 self.current_webview(),
                 target_dir=self.profile_manager.base_dir / "saved_pages",
@@ -551,6 +553,22 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         )
         self.session_autosaver.schedule()
         return webview
+
+    def _reload_current_webview(self):
+        """Actualiza vistas dinámicas sin volver a cargar su plantilla estática."""
+        webview = self.current_webview()
+        if webview is None:
+            return
+        if self.tab_data.get(id(webview), {}).get("agent_runs"):
+            self._render_agent_runs_tab(webview)
+            return
+        webview.reload()
+
+    def _render_agent_runs_tab(self, webview):
+        webview.page().setHtml(
+            render_agent_runs_page(),
+            QUrl.fromLocalFile(str(Path(__file__).with_name("agent_runs.html"))),
+        )
 
     def _handle_new_tab_request(self):
         return new_tab_page(self._add_tab)
@@ -725,6 +743,10 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         agents_action = QAction("Agentes IA...", self)
         agents_action.triggered.connect(lambda: self._open_ai_manager(self.current_profile_id))
         view_menu.addAction(agents_action)
+        agent_runs_action = QAction("Historial de agentes...", self)
+        agent_runs_action.setToolTip("Abrir el historial de ejecuciones de Copilot")
+        agent_runs_action.triggered.connect(self._open_agent_runs)
+        view_menu.addAction(agent_runs_action)
         devtools_action = QAction("Herramientas de desarrollador", self)
         devtools_action.setShortcut("F12")
         devtools_action.triggered.connect(self._toggle_devtools)
@@ -735,6 +757,14 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         website_action.setToolTip("Crawlear y analizar una URL")
         website_action.triggered.connect(self._open_website_tools)
         view_menu.addAction(website_action)
+
+    def _open_agent_runs(self):
+        """Abre una pestaña con el historial actualizado de ejecuciones."""
+        webview = self._add_tab(profile_id=self.current_profile_id)
+        self.tab_data[id(webview)]["agent_runs"] = True
+        self._render_agent_runs_tab(webview)
+        self.tabs.setTabText(self.tabs.indexOf(webview), "Historial de agentes")
+        self.statusBar().showMessage("Historial de agentes cargado", 3000)
 
     def _open_website_tools(self):
         webview = self.current_webview()

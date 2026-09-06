@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>IARA · Registro de agentes</title>
+<style>
+  :root{
+    --ink:#14161c;
+    --panel:#1a1d25;
+    --panel-2:#20232c;
+    --border:#2b2f3a;
+    --border-soft:#23262f;
+    --text:#e6e8ee;
+    --muted:#8b90a3;
+    --muted-2:#5f6474;
+    --amber:#e2a63b;
+    --amber-dim:#4a3c22;
+    --green:#59c98a;
+    --green-dim:#1f3a2c;
+    --red:#e5636b;
+    --red-dim:#3d2226;
+    --violet:#b39bf0;
+    --violet-dim:#332a45;
+    --mono: "JetBrains Mono","SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+    --sans: -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    background:var(--ink);
+    color:var(--text);
+    font-family:var(--sans);
+    font-size:13.5px;
+    display:flex;
+    flex-direction:column;
+    overflow:hidden;
+  }
+
+  /* ---------- top bar ---------- */
+  header{
+    flex:0 0 auto;
+    display:flex;
+    align-items:center;
+    gap:18px;
+    padding:12px 18px;
+    border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg,#181a21,#15171d);
+  }
+  .brand{
+    display:flex;
+    align-items:baseline;
+    gap:8px;
+    white-space:nowrap;
+  }
+  .brand .dot{
+    width:8px;height:8px;border-radius:50%;
+    background:var(--amber);
+    box-shadow:0 0 10px var(--amber);
+    flex:0 0 auto;
+  }
+  .brand h1{
+    font-size:14px;
+    font-weight:600;
+    margin:0;
+    letter-spacing:.2px;
+  }
+  .brand span{
+    color:var(--muted);
+    font-size:12px;
+  }
+  .stats{
+    display:flex;
+    gap:6px;
+    flex-wrap:wrap;
+  }
+  .stat{
+    display:flex;
+    align-items:baseline;
+    gap:5px;
+    padding:5px 10px;
+    background:var(--panel);
+    border:1px solid var(--border-soft);
+    border-radius:7px;
+    white-space:nowrap;
+  }
+  .stat b{font-size:13px;font-family:var(--mono);}
+  .stat small{color:var(--muted);font-size:11px;}
+  .stat.success b{color:var(--green);}
+  .stat.error b{color:var(--red);}
+  .stat.blocked b{color:var(--violet);}
+
+  .controls{
+    margin-left:auto;
+    display:flex;
+    gap:8px;
+    align-items:center;
+  }
+  .controls input[type=text]{
+    background:var(--panel);
+    border:1px solid var(--border-soft);
+    color:var(--text);
+    padding:7px 10px;
+    border-radius:7px;
+    font-size:12.5px;
+    width:200px;
+    font-family:var(--sans);
+  }
+  .controls input[type=text]:focus{outline:1px solid var(--amber);}
+  .controls select{
+    background:var(--panel);
+    border:1px solid var(--border-soft);
+    color:var(--text);
+    padding:7px 8px;
+    border-radius:7px;
+    font-size:12.5px;
+    font-family:var(--sans);
+  }
+
+  /* ---------- body layout ---------- */
+  .layout{
+    flex:1 1 auto;
+    display:flex;
+    min-height:0;
+  }
+  .runlist{
+    flex:0 0 320px;
+    border-right:1px solid var(--border);
+    overflow-y:auto;
+    background:#161820;
+  }
+  .runlist::-webkit-scrollbar, .detail::-webkit-scrollbar{width:9px;}
+  .runlist::-webkit-scrollbar-thumb, .detail::-webkit-scrollbar-thumb{background:#2a2d38;border-radius:5px;}
+
+  .day-heading{
+    padding:9px 14px 5px;
+    font-size:10.5px;
+    text-transform:uppercase;
+    letter-spacing:.6px;
+    color:var(--muted-2);
+    background:#161820;
+    position:sticky;
+    top:0;
+  }
+  .run-card{
+    padding:10px 14px;
+    border-bottom:1px solid var(--border-soft);
+    cursor:pointer;
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+  }
+  .run-card:hover{background:#1c1f29;}
+  .run-card.active{background:var(--panel-2); box-shadow:inset 3px 0 0 var(--amber);}
+  .run-top{display:flex;align-items:center;gap:7px;}
+  .badge{
+    width:7px;height:7px;border-radius:50%;flex:0 0 auto;
+  }
+  .badge.success{background:var(--green);}
+  .badge.error{background:var(--red);}
+  .badge.blocked{background:var(--violet);}
+  .badge.auth{background:#e5636b;}
+  .badge.unknown{background:var(--muted-2);}
+  .run-time{font-family:var(--mono);font-size:11.5px;color:var(--muted);}
+  .run-branch{
+    margin-left:auto;
+    font-family:var(--mono);
+    font-size:10.5px;
+    color:var(--muted-2);
+    background:#20232c;
+    padding:1px 6px;
+    border-radius:4px;
+  }
+  .run-title{
+    font-size:12.5px;
+    line-height:1.35;
+    color:var(--text);
+    display:-webkit-box;
+    -webkit-line-clamp:2;
+    -webkit-box-orient:vertical;
+    overflow:hidden;
+  }
+  .run-meta{display:flex;gap:10px;font-size:11px;color:var(--muted-2);font-family:var(--mono);}
+  .empty-list{padding:30px 16px;color:var(--muted);font-size:12.5px;text-align:center;}
+
+  /* ---------- detail pane ---------- */
+  .detail{
+    flex:1 1 auto;
+    overflow-y:auto;
+    padding:22px 30px 60px;
+  }
+  .detail-head{
+    display:flex;
+    align-items:flex-start;
+    gap:14px;
+    margin-bottom:16px;
+  }
+  .status-pill{
+    flex:0 0 auto;
+    font-size:11px;
+    font-family:var(--mono);
+    padding:3px 9px;
+    border-radius:20px;
+    border:1px solid transparent;
+    margin-top:3px;
+  }
+  .status-pill.success{color:var(--green); background:var(--green-dim); border-color:#2c5a41;}
+  .status-pill.error{color:var(--red); background:var(--red-dim); border-color:#5c2e32;}
+  .status-pill.blocked{color:var(--violet); background:var(--violet-dim); border-color:#4a3e63;}
+  .status-pill.auth{color:#f0a5a5; background:#3d2226; border-color:#5c2e32;}
+  .status-pill.unknown{color:var(--muted); background:#22242c; border-color:var(--border-soft);}
+
+  .detail-title{font-size:17px;font-weight:600; line-height:1.4;}
+  .detail-sub{
+    display:flex;flex-wrap:wrap;gap:14px;
+    margin-top:8px;font-size:12px;color:var(--muted);font-family:var(--mono);
+  }
+  .detail-sub b{color:var(--text);font-weight:500;}
+
+  .kv-row{display:flex;gap:8px;}
+  .kv-row .k{color:var(--muted-2);min-width:80px;}
+
+  .section-label{
+    font-size:10.5px;
+    text-transform:uppercase;
+    letter-spacing:.7px;
+    color:var(--muted-2);
+    margin:26px 0 10px;
+  }
+
+  .tree-files{
+    display:flex;flex-wrap:wrap;gap:6px;
+  }
+  .tree-file{
+    font-family:var(--mono);
+    font-size:11px;
+    background:var(--panel);
+    border:1px solid var(--border-soft);
+    padding:3px 7px;
+    border-radius:5px;
+    color:var(--muted);
+  }
+  .tree-file .code{color:var(--amber);margin-right:5px;}
+
+  .task-box{
+    background:var(--panel);
+    border:1px solid var(--border-soft);
+    border-left:3px solid var(--amber);
+    border-radius:6px;
+    padding:12px 14px;
+    font-size:13px;
+    line-height:1.55;
+    white-space:pre-wrap;
+  }
+
+  /* timeline */
+  .timeline{display:flex;flex-direction:column;gap:8px;}
+  .tl-item{
+    background:var(--panel);
+    border:1px solid var(--border-soft);
+    border-radius:7px;
+    padding:9px 12px;
+  }
+  .tl-item.tl-fail{border-color:#4a2c30; background:#211619;}
+  .tl-item.tl-note{background:transparent;border:none;padding:4px 2px;}
+  .tl-head{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;}
+  .tl-icon{
+    width:18px;height:18px;border-radius:4px;
+    display:flex;align-items:center;justify-content:center;
+    font-size:11px;flex:0 0 auto;
+    background:#282c37;color:var(--muted);
+  }
+  .tl-icon.read{color:#7fb0e5;}
+  .tl-icon.edit{color:var(--amber);}
+  .tl-icon.shell{color:#8ee2b8;}
+  .tl-icon.search{color:#9aa3f5;}
+  .tl-icon.fail{color:var(--red);}
+  .tl-label{color:var(--text);}
+  .tl-detail{
+    margin:6px 0 0 26px;
+    color:var(--muted);
+    font-family:var(--mono);
+    font-size:11.5px;
+    white-space:pre-wrap;
+    word-break:break-word;
+  }
+  .tl-result{
+    margin:3px 0 0 26px;
+    color:var(--muted-2);
+    font-family:var(--mono);
+    font-size:11.5px;
+  }
+  .tl-note p{
+    margin:0;
+    font-size:13px;
+    line-height:1.6;
+    color:#c7cad4;
+    white-space:pre-wrap;
+  }
+  .tl-error{
+    margin:6px 0 0 26px;
+    color:#f0a5a5;
+    font-family:var(--mono);
+    font-size:11.5px;
+    white-space:pre-wrap;
+  }
+
+  .summary-box{
+    font-size:13px;
+    line-height:1.6;
+    white-space:pre-wrap;
+    color:#d6d8e0;
+  }
+
+  .footer-stats{
+    display:flex;
+    gap:22px;
+    margin-top:24px;
+    padding-top:16px;
+    border-top:1px solid var(--border);
+    font-family:var(--mono);
+    font-size:12px;
+    color:var(--muted);
+    flex-wrap:wrap;
+  }
+  .footer-stats b{color:var(--text);}
+  .resume-tag{
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--muted-2);
+    cursor:pointer;
+  }
+  .resume-tag:hover{color:var(--amber);}
+
+  .placeholder{
+    height:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    color:var(--muted-2);
+    font-size:13px;
+  }
+
+  ::selection{background:#3a3320;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>IARA</h1>
+    <span>· registro de corridas de Copilot</span>
+  </div>
+  <div class="stats" id="stats"></div>
+  <div class="controls">
+    <input type="text" id="searchBox" placeholder="Buscar en tareas o comandos…">
+    <select id="statusFilter">
+      <option value="all">Todos los estados</option>
+      <option value="success">Éxito</option>
+      <option value="error">Error</option>
+      <option value="blocked">Permiso denegado</option>
+      <option value="auth">Falla de auth</option>
+    </select>
+    <select id="branchFilter"><option value="all">Todas las ramas</option></select>
+    <select id="sortOrder">
+      <option value="new">Más recientes</option>
+      <option value="old">Más antiguos</option>
+      <option value="credits">Más créditos</option>
+    </select>
+  </div>
+</header>
+
+<div class="layout">
+  <div class="runlist" id="runlist"></div>
+  <div class="detail" id="detail"><div class="placeholder">Elegí una corrida de la izquierda</div></div>
+</div>
+
+<script>
+const RAW_LOGS = [];
+
+/* ================= PARSER ================= */
+
+function stripAnsi(s){
+  return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\r/g, "");
+}
+
+function parseLog(filename, rawOriginal){
+  const raw = stripAnsi(rawOriginal);
+
+  const get = (re) => { const m = raw.match(re); return m ? m[1].trim() : null; };
+
+  const startedStr = get(/^started:\s*(.+)$/m);
+  const cwd = get(/^cwd:\s*(.+)$/m);
+  const branch = get(/Contexto Git:\s*rama=(\S+)/) || "—";
+
+  // working tree block
+  let workingTree = [];
+  const wtMatch = raw.match(/Working tree:\n([\s\S]*?)\n\n/);
+  if(wtMatch){
+    workingTree = wtMatch[1].split("\n").map(l=>l.trim()).filter(Boolean).map(l=>{
+      const m = l.match(/^(\S+)\s+(.+)$/);
+      return m ? {code:m[1], path:m[2]} : {code:"", path:l};
+    });
+  }
+
+  // task block: text right after "task:\n" up to the next blank line
+  let taskMatch = raw.match(/\ntask:\n([\s\S]*?)\n\n/);
+  let taskText = taskMatch ? taskMatch[1].trim() : (get(/^command:\s*(.+)$/m) || "(sin descripción)");
+  let bodyStart = taskMatch ? taskMatch.index + taskMatch[0].length : 0;
+
+  // footer stats
+  const changesMatch = raw.match(/Changes\s+\+(\d+)\s+-(\d+)/);
+  const creditsMatch = raw.match(/AI Credits\s+([\d.]+)(?:\s*\(([^)]+)\))?/);
+  const tokensMatch = raw.match(/Tokens\s+↑\s*([^\n(•]+)(?:\(([^)]*)\))?\s*•\s*↓\s*([^\n(]+)(?:\(([^)]*)\))?/);
+  const resumeMatch = raw.match(/Resume\s+copilot --resume=(\S+)/);
+
+  // exit code: take the LAST "(código N)" occurrence
+  let exitCode = null, exitLabel = null;
+  const exitRe = /---\s*(.*?)\s*\(código\s*(-?\d+)\)\s*---/g;
+  let em, lastEm = null;
+  while((em = exitRe.exec(raw)) !== null){ lastEm = em; }
+  if(lastEm){ exitLabel = lastEm[1]; exitCode = lastEm[2]; }
+
+  const hasAuthError = /Error:\s*Authentication token/i.test(raw) || /no autenticado/i.test(raw);
+  const permDeniedCount = (raw.match(/Permission denied/g) || []).length;
+
+  let status = "unknown";
+  if(hasAuthError) status = "auth";
+  else if(permDeniedCount > 0) status = "blocked";
+  else if(exitCode === "0") status = "success";
+  else if(exitCode !== null) status = "error";
+
+  // footer start index, to bound the narrative body
+  let footerIdx = raw.length;
+  const footerSearch = raw.search(/\n\n\nChanges\s+\+/);
+  if(footerSearch >= 0) footerIdx = footerSearch;
+  else {
+    const exitIdx = raw.search(/---\s*.*\(código/);
+    if(exitIdx >= 0) footerIdx = exitIdx;
+  }
+
+  const bodyRaw = raw.slice(bodyStart, footerIdx).trim();
+
+  // split narrative body into blocks by blank line
+  const paragraphs = bodyRaw.split(/\n\n+/).map(p=>p.trim()).filter(Boolean);
+  const timeline = paragraphs.map(p => {
+    const lines = p.split("\n");
+    const first = lines[0];
+    let type = "note";
+    if(first.startsWith("/ ")) type = "search";
+    else if(first.startsWith("✗")) type = "fail";
+    else if(first.startsWith("●")) type = "action";
+    else if(first.startsWith("Error:") || /^\s*Failed to|^\s*To authenticate|^\s*•/.test(first)) type = "error";
+
+    if(type === "note" || type === "error"){
+      return {type, text:p};
+    }
+    const label = first.replace(/^[✗●\/]\s*/, "");
+    const detailLines = [];
+    const resultLines = [];
+    for(let i=1;i<lines.length;i++){
+      const l = lines[i];
+      if(/^\s*│/.test(l)) detailLines.push(l.replace(/^\s*│\s?/,""));
+      else if(/^\s*└/.test(l)) resultLines.push(l.replace(/^\s*└\s?/,""));
+      else detailLines.push(l.trim());
+    }
+    return {type, label, detail:detailLines.join(" ").trim(), result:resultLines.join(" ").trim()};
+  });
+
+  // trailing summary: last "note" paragraphs right before the footer often hold the agent's final message.
+  // We already have them inside timeline as type note; pull the LAST contiguous note-run as "summary".
+  let summary = "";
+  for(let i=timeline.length-1;i>=0;i--){
+    if(timeline[i].type === "note"){ summary = timeline[i].text + (summary?("\n\n"+summary):""); }
+    else break;
+  }
+
+  let started = null;
+  if(startedStr){
+    const d = new Date(startedStr);
+    if(!isNaN(d)) started = d;
+  }
+
+  return {
+    filename, started, startedStr, cwd, branch, workingTree, taskText,
+    timeline, summary, status,
+    exitCode, exitLabel,
+    changes: changesMatch ? {added:+changesMatch[1], removed:+changesMatch[2]} : null,
+    credits: creditsMatch ? {amount:+creditsMatch[1], duration:creditsMatch[2]||null} : null,
+    tokensUp: tokensMatch ? tokensMatch[1].trim() : null,
+    tokensUpDetail: tokensMatch ? tokensMatch[2] : null,
+    tokensDown: tokensMatch ? tokensMatch[3].trim() : null,
+    tokensDownDetail: tokensMatch ? tokensMatch[4] : null,
+    resumeId: resumeMatch ? resumeMatch[1] : null,
+  };
+}
+
+/* ================= APP STATE ================= */
+
+let RUNS = RAW_LOGS.map(f => parseLog(f.filename, f.content));
+RUNS.sort((a,b)=> (b.started?.getTime()||0) - (a.started?.getTime()||0));
+
+let activeId = null;
+let filterText = "";
+let filterStatus = "all";
+let filterBranch = "all";
+let sortOrder = "new";
+
+const STATUS_LABEL = {success:"Éxito", error:"Error", blocked:"Bloqueado (permisos)", auth:"Falla de autenticación", unknown:"Sin datos"};
+
+function fmtTime(d){
+  if(!d) return "—";
+  return d.toLocaleTimeString('es-AR', {hour:'2-digit', minute:'2-digit'});
+}
+function fmtDay(d){
+  if(!d) return "Sin fecha";
+  return d.toLocaleDateString('es-AR', {weekday:'long', day:'numeric', month:'long'});
+}
+
+function buildBranchOptions(){
+  const sel = document.getElementById('branchFilter');
+  const branches = [...new Set(RUNS.map(r=>r.branch))];
+  sel.innerHTML = '<option value="all">Todas las ramas</option>' +
+    branches.map(b=>`<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join("");
+}
+
+function escapeHtml(s){
+  if(s===null||s===undefined) return "";
+  return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function renderStats(){
+  const total = RUNS.length;
+  const success = RUNS.filter(r=>r.status==='success').length;
+  const error = RUNS.filter(r=>r.status==='error').length;
+  const blocked = RUNS.filter(r=>r.status==='blocked').length;
+  const auth = RUNS.filter(r=>r.status==='auth').length;
+  const credits = RUNS.reduce((s,r)=> s + (r.credits?r.credits.amount:0), 0);
+  const added = RUNS.reduce((s,r)=> s + (r.changes?r.changes.added:0), 0);
+  const removed = RUNS.reduce((s,r)=> s + (r.changes?r.changes.removed:0), 0);
+
+  document.getElementById('stats').innerHTML = `
+    <div class="stat"><b>${total}</b><small>corridas</small></div>
+    <div class="stat success"><b>${success}</b><small>ok</small></div>
+    <div class="stat error"><b>${error+blocked+auth}</b><small>con problemas</small></div>
+    <div class="stat"><b>${credits.toFixed(1)}</b><small>créditos</small></div>
+    <div class="stat"><b>+${added} -${removed}</b><small>líneas</small></div>
+  `;
+}
+
+function filteredSorted(){
+  let list = RUNS.filter(r=>{
+    if(filterStatus!=='all' && r.status!==filterStatus) return false;
+    if(filterBranch!=='all' && r.branch!==filterBranch) return false;
+    if(filterText){
+      const hay = (r.taskText+" "+r.cwd+" "+r.filename).toLowerCase();
+      if(!hay.includes(filterText.toLowerCase())) return false;
+    }
+    return true;
+  });
+  if(sortOrder==='new') list.sort((a,b)=> (b.started?.getTime()||0)-(a.started?.getTime()||0));
+  else if(sortOrder==='old') list.sort((a,b)=> (a.started?.getTime()||0)-(b.started?.getTime()||0));
+  else if(sortOrder==='credits') list.sort((a,b)=> (b.credits?.amount||0)-(a.credits?.amount||0));
+  return list;
+}
+
+function renderList(){
+  const list = filteredSorted();
+  const el = document.getElementById('runlist');
+  if(list.length===0){
+    el.innerHTML = '<div class="empty-list">No hay corridas que coincidan con el filtro.</div>';
+    return;
+  }
+  let html = "";
+  let lastDay = null;
+  for(const r of list){
+    const dayKey = r.started ? r.started.toDateString() : "none";
+    if(dayKey !== lastDay){
+      html += `<div class="day-heading">${escapeHtml(fmtDay(r.started))}</div>`;
+      lastDay = dayKey;
+    }
+    const title = r.taskText.split("\n")[0].slice(0,110);
+    html += `
+      <div class="run-card ${r.filename===activeId?'active':''}" data-id="${escapeHtml(r.filename)}">
+        <div class="run-top">
+          <span class="badge ${r.status}"></span>
+          <span class="run-time">${fmtTime(r.started)}</span>
+          <span class="run-branch">${escapeHtml(r.branch)}</span>
+        </div>
+        <div class="run-title">${escapeHtml(title)}</div>
+        <div class="run-meta">
+          ${r.credits ? `<span>${r.credits.amount.toFixed(2)} cr</span>` : ""}
+          ${r.changes ? `<span>+${r.changes.added} -${r.changes.removed}</span>` : ""}
+        </div>
+      </div>`;
+  }
+  el.innerHTML = html;
+  el.querySelectorAll('.run-card').forEach(card=>{
+    card.addEventListener('click', ()=>{ activeId = card.dataset.id; renderList(); renderDetail(); });
+  });
+}
+
+function iconFor(item){
+  if(item.type==='fail') return {cls:'fail', ch:'✗'};
+  if(item.type==='search') return {cls:'search', ch:'⌕'};
+  if(/\(shell\)/.test(item.label||'')) return {cls:'shell', ch:'›'};
+  if(/^Read/.test(item.label||'')) return {cls:'read', ch:'▤'};
+  if(/^Edit/.test(item.label||'')) return {cls:'edit', ch:'✎'};
+  return {cls:'', ch:'●'};
+}
+
+function renderTimeline(run){
+  return run.timeline.map(item=>{
+    if(item.type==='note'){
+      return `<div class="tl-item tl-note"><p>${escapeHtml(item.text)}</p></div>`;
+    }
+    if(item.type==='error'){
+      return `<div class="tl-item tl-fail">
+        <div class="tl-head"><span class="tl-icon fail">✗</span><span class="tl-label">Error</span></div>
+        <div class="tl-error">${escapeHtml(item.text)}</div>
+      </div>`;
+    }
+    const ic = iconFor(item);
+    return `<div class="tl-item ${item.type==='fail'?'tl-fail':''}">
+      <div class="tl-head"><span class="tl-icon ${ic.cls}">${ic.ch}</span><span class="tl-label">${escapeHtml(item.label||'')}</span></div>
+      ${item.detail ? `<div class="tl-detail">${escapeHtml(item.detail)}</div>` : ""}
+      ${item.result ? `<div class="tl-result">→ ${escapeHtml(item.result)}</div>` : ""}
+    </div>`;
+  }).join("");
+}
+
+function renderDetail(){
+  const el = document.getElementById('detail');
+  const run = RUNS.find(r=>r.filename===activeId);
+  if(!run){ el.innerHTML = '<div class="placeholder">Elegí una corrida de la izquierda</div>'; return; }
+
+  const treeHtml = run.workingTree.length ? `
+    <div class="section-label">Working tree al iniciar</div>
+    <div class="tree-files">${run.workingTree.map(f=>`<span class="tree-file"><span class="code">${escapeHtml(f.code)}</span>${escapeHtml(f.path)}</span>`).join("")}</div>
+  ` : "";
+
+  const summaryHtml = run.summary ? `
+    <div class="section-label">Resultado final</div>
+    <div class="summary-box">${escapeHtml(run.summary)}</div>
+  ` : "";
+
+  const footerHtml = `
+    <div class="footer-stats">
+      ${run.changes ? `<span><b>+${run.changes.added} -${run.changes.removed}</b> líneas</span>` : ""}
+      ${run.credits ? `<span><b>${run.credits.amount.toFixed(2)}</b> créditos${run.credits.duration?` · ${run.credits.duration}`:""}</span>` : ""}
+      ${run.tokensUp ? `<span>↑ <b>${run.tokensUp.trim()}</b></span>` : ""}
+      ${run.tokensDown ? `<span>↓ <b>${run.tokensDown.trim()}</b></span>` : ""}
+      ${run.exitCode!==null ? `<span>código <b>${escapeHtml(run.exitCode)}</b></span>` : ""}
+      ${run.resumeId ? `<span class="resume-tag" title="Click para copiar" data-resume="copilot --resume=${escapeHtml(run.resumeId)}">resume: ${escapeHtml(run.resumeId.slice(0,8))}…</span>` : ""}
+    </div>
+  `;
+
+  el.innerHTML = `
+    <div class="detail-head">
+      <span class="status-pill ${run.status}">${STATUS_LABEL[run.status]}</span>
+      <div>
+        <div class="detail-title">${escapeHtml(run.taskText.split("\n")[0])}</div>
+        <div class="detail-sub">
+          <span><b>${fmtTime(run.started)}</b> · ${escapeHtml(fmtDay(run.started))}</span>
+          <span>rama <b>${escapeHtml(run.branch)}</b></span>
+          <span title="${escapeHtml(run.cwd||'')}">${escapeHtml((run.cwd||'').split(/[\\\/]/).slice(-2).join('/'))}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-label">Tarea pedida</div>
+    <div class="task-box">${escapeHtml(run.taskText)}</div>
+
+    ${treeHtml}
+
+    <div class="section-label">Actividad del agente</div>
+    <div class="timeline">${renderTimeline(run) || '<div class="tl-item tl-note"><p>Sin pasos registrados.</p></div>'}</div>
+
+    ${summaryHtml}
+    ${footerHtml}
+  `;
+
+  const rt = el.querySelector('.resume-tag');
+  if(rt){
+    rt.addEventListener('click', ()=>{
+      navigator.clipboard?.writeText(rt.dataset.resume).catch(()=>{});
+      rt.textContent = "copiado ✓";
+      setTimeout(()=>{ rt.textContent = "resume: " + rt.dataset.resume.split("=")[1].slice(0,8) + "…"; }, 1200);
+    });
+  }
+}
+
+/* ================= WIRE UP ================= */
+
+document.getElementById('searchBox').addEventListener('input', e=>{ filterText = e.target.value; renderList(); });
+document.getElementById('statusFilter').addEventListener('change', e=>{ filterStatus = e.target.value; renderList(); });
+document.getElementById('branchFilter').addEventListener('change', e=>{ filterBranch = e.target.value; renderList(); });
+document.getElementById('sortOrder').addEventListener('change', e=>{ sortOrder = e.target.value; renderList(); });
+
+buildBranchOptions();
+renderStats();
+renderList();
+if(RUNS.length){ activeId = filteredSorted()[0].filename; renderList(); renderDetail(); }
+</script>
+</body>
+</html>

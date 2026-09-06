@@ -257,8 +257,12 @@ class ProfileWindowMixin:
             collection_id=metadata.get("collection_id"),
             insert_index=old_index,
         )
+        if metadata.get("agent_runs"):
+            self.tab_data[id(replacement)]["agent_runs"] = True
         replacement.setProperty("_session_title", current.property("_session_title"))
-        if not current_url.isEmpty() and current_url.toString() != "about:blank":
+        if metadata.get("agent_runs"):
+            self._render_agent_runs_tab(replacement)
+        elif not current_url.isEmpty() and current_url.toString() != "about:blank":
             replacement.setUrl(current_url)
         self.tabs.setTabText(self.tabs.indexOf(replacement), current_title)
         self.tab_data.pop(id(current), None)
