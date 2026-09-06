@@ -93,7 +93,10 @@ AGENT_DEFS = {
         "label": "🤖 Copilot — Agente principal",
         "short_label": "Copilot",
         "description": "Agente AI principal: puede leer y modificar código y documentación, generar commits atómicos y ejecutar verificaciones de proyecto.",
-        "default_command": 'copilot -i "{prompt}" --allow-all',
+        "default_command": (
+            'copilot -p "{prompt}" --allow-all-tools '
+            "--allow-all-paths --allow-all-urls"
+        ),
         "needs_task": False,
         "needs_source_branch": True,
         "prompt_template": COPILOT_DEFAULT_PROMPT,
@@ -190,7 +193,14 @@ class AgentConfigStore:
 
         for aid, defn in AGENT_DEFS.items():
             current = entry["agents"][aid].get("command", "")
-            if current in LEGACY_DEFAULT_COMMANDS.get(aid, []):
+            if current in LEGACY_DEFAULT_COMMANDS.get(aid, []) or (
+                aid == "copilot"
+                and current in (
+                    'copilot -i "{prompt}" --allow-all',
+                    'copilot -p "{prompt}"',
+                    'copilot -p "{prompt}" --allow-all',
+                )
+            ):
                 entry["agents"][aid]["command"] = defn["default_command"]
 
         return entry
@@ -239,8 +249,11 @@ class AIAgentsDialog(QDialog):
         # rutas con "/" incluso en Windows; con "\" nativo evitamos
         # problemas raros al pasarle la carpeta a cmd.exe / QProcess).
         self.folder = str(Path(folder))
-        self.profile_id = profile_id or "default"
-        self.profile_ids = profile_ids or [self.profile_id]
+        self.profile_ids = list(profile_ids or [])
+        self.profile_id = (
+            profile_id if profile_id in self.profile_ids
+            else (self.profile_ids[0] if self.profile_ids else None)
+        )
         self.profile_names = profile_names or {}
         self.profile_changed_handler = profile_changed_handler
         self.new_profile_handler = new_profile_handler
@@ -250,7 +263,7 @@ class AIAgentsDialog(QDialog):
         self.git_changed_handler = git_changed_handler
         self.auth_url_handler = auth_url_handler
         self.auth_success_handler = auth_success_handler
-        self.copilot_home = COPILOT_PROFILES_DIR / self.profile_id
+        self.copilot_home = COPILOT_PROFILES_DIR / (self.profile_id or "")
         self.raw_branch = "master"
         self.profile_branch = "main"
         self.config_store = AgentConfigStore()
@@ -324,10 +337,13 @@ class AIAgentsDialog(QDialog):
         self._refresh_repo_status()
 
     def _agent_environment(self, agent_id: str):
+        if not self.profile_id:
+            return None
         self.copilot_home.mkdir(parents=True, exist_ok=True)
         environment = QProcessEnvironment.systemEnvironment()
         for name in ("COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "ANYAPI_API_KEY"):
             environment.remove(name)
+        environment.insert("COPILOT_ALLOW_ALL", "1")
         environment.insert("COPILOT_HOME", str(self.copilot_home))
         # Device flow link is opened by WebAgent, never by system browser.
         environment.insert("BROWSER", "cmd.exe /c exit 0")
@@ -610,6 +626,14 @@ class AIAgentsDialog(QDialog):
     def _run_agent(self, agent_id: str, preview: bool = False):
         defn = AGENT_DEFS[agent_id]
 
+        if not self.profile_id or self.profile_id not in self.profile_ids:
+            QMessageBox.warning(
+                self,
+                "Perfil requerido",
+                "Seleccioná un perfil distinto de Default antes de ejecutar un agente.",
+            )
+            return
+
         if shutil.which(defn["check_binary"]) is None:
             QMessageBox.warning(
                 self, f"{defn['check_binary']} no encontrado",
@@ -766,6 +790,13 @@ class AIAgentsDialog(QDialog):
             )
 
     def _start_copilot_login(self):
+        if not self.profile_id or self.profile_id not in self.profile_ids:
+            QMessageBox.warning(
+                self,
+                "Perfil requerido",
+                "Seleccioná un perfil distinto de Default antes de autenticar Copilot.",
+            )
+            return
         if self.process is not None:
             QMessageBox.information(self, "Copilot", "Ya hay un proceso ejecutándose.")
             return

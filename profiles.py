@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QCheckBox, QDialogButtonBox, QFileDialog,
     QInputDialog, QMessageBox,
 )
-from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtCore import Qt, QUrl, QTimer
 
 from file_ops import GitVersioning
 from paths import BROWSER_DATA_DIR, IA_DATA_DIR
@@ -162,8 +162,35 @@ class ProfileManager:
             p.update(kwargs)
             self.save_profiles()
 
+    def rename_profile(self, profile_id: str, new_name: str):
+        self.update_profile(profile_id, name=new_name)
+
+    def delete_profile(self, profile_id: str) -> bool:
+        target = self.get_profile(profile_id)
+        if target and target.get("is_default"):
+            return False
+        if len(self.profiles) <= 1:
+            return False
+        self.profiles = [profile for profile in self.profiles if profile["id"] != profile_id]
+        self.save_profiles()
+        return True
+
     def profile_ids(self) -> list[str]:
         return [profile["id"] for profile in self.profiles]
+
+    def agent_profiles(self) -> list[dict]:
+        return [profile for profile in self.profiles if not profile.get("is_default")]
+
+    def agent_profile_ids(self) -> list[str]:
+        return [profile["id"] for profile in self.agent_profiles()]
+
+    def get_agent_profile_id(self) -> str | None:
+        profile_ids = self.agent_profile_ids()
+        return profile_ids[0] if profile_ids else None
+
+    def is_agent_profile(self, profile_id: str | None) -> bool:
+        profile = self.get_profile(profile_id) if profile_id else None
+        return bool(profile and not profile.get("is_default"))
 
     def profile_names(self) -> dict[str, str]:
         return {profile["id"]: profile["name"] for profile in self.profiles}
@@ -271,6 +298,9 @@ class ProfileWindowMixin:
     def _open_ai_manager(self, profile_id: str):
         from ai_manager import AIAgentsDialog
 
+        profile_id = self._ensure_agent_profile()
+        if not profile_id:
+            return
         profile = self.profile_manager.get_profile(profile_id)
         if not profile:
             return
@@ -280,7 +310,7 @@ class ProfileWindowMixin:
             self,
             folder,
             profile_id=profile_id,
-            profile_ids=self.profile_manager.profile_ids(),
+            profile_ids=self.profile_manager.agent_profile_ids(),
             profile_names=self.profile_manager.profile_names(),
             profile_changed_handler=self._on_agent_profile_changed,
             new_profile_handler=self._create_profile_dialog,
@@ -304,6 +334,19 @@ class ProfileWindowMixin:
         dialog.raise_()
         dialog.activateWindow()
 
+    def _ensure_agent_profile(self) -> str | None:
+        profile_id = self.profile_manager.get_agent_profile_id()
+        if profile_id:
+            return profile_id
+
+        QMessageBox.information(
+            self,
+            "Perfil requerido",
+            "Necesitás crear un perfil separado de Default para usar agentes IA.",
+        )
+        created = self._create_profile_dialog()
+        return created["id"] if created else None
+
     def _on_agent_profile_changed(self, profile_id):
         if profile_id:
             self.statusBar().showMessage(
@@ -313,6 +356,13 @@ class ProfileWindowMixin:
 
     def _open_copilot_auth_url(self, url: str, profile_id: str, code: str = ""):
         """Open Copilot device authorization in the requested profile."""
+        if not self.profile_manager.is_agent_profile(profile_id):
+            QMessageBox.warning(
+                self,
+                "Perfil requerido",
+                "La autenticación de Copilot no puede usar el perfil Default.",
+            )
+            return
         webview = self._add_tab(profile_id=profile_id)
         webview._copilot_auth_code = code
         webview.loadFinished.connect(
@@ -327,7 +377,9 @@ class ProfileWindowMixin:
             10000,
         )
 
-    def _fill_copilot_code(self, webview, code: str, ok: bool):
+    def _fill_copilot_code(
+        self, webview, code: str, ok: bool, attempts: int = 0
+    ):
         if not ok or not code:
             return
         script = f"""
@@ -354,7 +406,19 @@ class ProfileWindowMixin:
             return true;
             }})()
             """
-        webview.page().runJavaScript(script)
+        webview.page().runJavaScript(
+            script,
+            lambda filled: (
+                None
+                if filled or attempts >= 10
+                else QTimer.singleShot(
+                    500,
+                    lambda: self._fill_copilot_code(
+                        webview, code, True, attempts + 1
+                    ),
+                )
+            ),
+        )
 
     def _close_copilot_auth_tab(self, profile_id: str):
         for index in range(self.tabs.count() - 1, -1, -1):
@@ -430,11 +494,11 @@ class ProfileWindowMixin:
     def _create_profile_dialog(self):
         dialog = NewProfileDialog(self, default_dir=str(Path.home() / "Downloads"))
         if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
+            return None
         name, _files_dir, git_versioning = dialog.get_values()
         if not name:
             QMessageBox.warning(self, "Aviso", "El perfil necesita un nombre")
-            return
+            return None
         files_dir = self.profile_manager.get_files_dir()
         if git_versioning and not GitVersioning.is_available():
             QMessageBox.warning(
@@ -443,7 +507,7 @@ class ProfileWindowMixin:
                 "igual, pero sin versionado hasta que instales git.",
             )
         shared_git = any(p.get("git_versioning") for p in self.profile_manager.profiles)
-        self.profile_manager.create_profile(name, files_dir, shared_git)
+        profile = self.profile_manager.create_profile(name, files_dir, shared_git)
         self._load_profiles_list()
         self._open_new_default_tab()
         if git_versioning and not GitVersioning.check_identity(files_dir):
@@ -451,6 +515,7 @@ class ProfileWindowMixin:
                 "⚠ Git no tiene user.name/user.email configurados: los commits "
                 "no se van a guardar hasta que los configures."
             )
+        return profile
 
     def _delete_profile(self, profile_id: str):
         data = self.profile_manager.get_profile(profile_id)
@@ -490,20 +555,6 @@ class ProfileWindowMixin:
                 "profile_id", self.profile_manager.get_default_profile_id()
             )
             self._highlight_active_profile()
-
-    def rename_profile(self, profile_id: str, new_name: str):
-        self.update_profile(profile_id, name=new_name)
-
-    def delete_profile(self, profile_id: str):
-        target = self.get_profile(profile_id)
-        if target and target.get("is_default"):
-            return False
-        if len(self.profiles) <= 1:
-            return False
-        self.profiles = [p for p in self.profiles if p["id"] != profile_id]
-        self.save_profiles()
-        return True
-
 
 class NewProfileDialog(QDialog):
     """Dialog to create or rename a browser profile."""

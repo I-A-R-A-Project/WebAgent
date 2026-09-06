@@ -28,6 +28,7 @@ from scripts.website_tools.dialogs import WebsiteToolsDialog
 from new_tab_page import render_new_tab_page
 from task_manager import TaskManager
 from agent_console import AgentConsolePanel
+from package_script_tab import PackageScriptTab
 from web_common.json_store import SidebarAppsStore
 from web_common.navbar import BasicNavbar, bind_navigation, save_web_page
 from web_common.navigation import (
@@ -111,6 +112,16 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         self.git_warning_label = QLabel("")
         self.git_warning_label.setStyleSheet("color: #b45309; font-weight: bold; padding-right: 10px;")
         self.statusBar().addPermanentWidget(self.git_warning_label)
+
+    @staticmethod
+    def _render_folder_view(page, folder_path):
+        window = page.view_widget.window()
+        folder_viewer.render_folder_view(
+            page,
+            folder_path,
+            show_git_history=True,
+            command_handler=getattr(window, "_run_package_script", None),
+        )
 
     def _setup_shortcuts(self):
         persist = lambda factor: self.profile_manager.update_profile(
@@ -319,9 +330,10 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         main_layout.addWidget(self.console_toggle, 0)
         self.agent_console = AgentConsolePanel(
             self,
-            lambda: self.current_profile_id,
-            lambda: self.profile_manager.get_files_dir(),
+            self._ensure_agent_profile,
+            self._get_agent_workspace,
             auth_url_handler=self._open_copilot_auth_url,
+            auth_success_handler=self._close_copilot_auth_tab,
         )
         main_layout.addWidget(self.agent_console, 0)
 
@@ -335,6 +347,13 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
 
         container = SidebarContainer(self.rail, content_widget, self.app_panel)
         self.setCentralWidget(container)
+
+    def _get_agent_workspace(self) -> str:
+        app_dir = Path(__file__).resolve().parent
+        project_root = app_dir.parent
+        if (project_root / "WebAgent").is_dir() and (project_root / "web_common").is_dir():
+            return str(project_root)
+        return str(app_dir)
 
     def _on_sidebar_app_clicked(self, app):
         app_id = app["id"]
@@ -416,8 +435,17 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
 
     def _toggle_agent_console(self):
         visible = not self.agent_console.isVisible()
+        if visible and not self._ensure_agent_profile():
+            return
         self.agent_console.setVisible(visible)
         self.console_toggle.setText("⌃ Ocultar consola" if visible else "⌄ Consola de agentes")
+
+    def _run_package_script(self, folder, script_name, command):
+        package_tab = PackageScriptTab(folder, script_name, command, self)
+        index = self.tabs.insertTab(
+            self.tabs.indexOf(self.plus_widget), package_tab, f"npm: {script_name}"
+        )
+        self.tabs.setCurrentIndex(index)
 
     def _create_navbar(self) -> QToolBar:
         navbar = BasicNavbar(self)
@@ -492,7 +520,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         webview = UnifiedWebTab(
             qt_profile,
             parent_window=self,
-            folder_view_handler=folder_viewer.render_folder_view,
+            folder_view_handler=self._render_folder_view,
             file_view_handler=folder_viewer.render_file_view,
             new_tab_handler=self._handle_new_tab_request,
             new_window_handler=self._handle_new_window_request,
@@ -555,10 +583,12 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             task = next((item for item in manager.tasks if item["id"] == task_id), None)
             profile = self.profile_manager.get_profile(profile_id)
             if task and profile:
+                if not self._ensure_agent_profile():
+                    return
                 self.agent_console.agent_combo.setCurrentIndex(
                     self.agent_console.agent_combo.findData("copilot")
                 )
-                self.agent_console.task_edit.setText(task["text"])
+                self.agent_console.task_edit.setPlainText(task["text"])
                 self.agent_console.setVisible(True)
                 self.console_toggle.setText("⌃ Ocultar consola")
             return
@@ -610,7 +640,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         default_id = self.profile_manager.get_default_profile_id()
         window = TabbedPopupWindow(
             self._get_qt_profile(default_id),
-            folder_view_handler=folder_viewer.render_folder_view,
+            folder_view_handler=self._render_folder_view,
             file_view_handler=folder_viewer.render_file_view,
             special_local_handler=self.handle_special_local_file,
         )
@@ -642,6 +672,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             before_delete=lambda widget: (
                 self.tab_data.pop(id(widget), None),
                 widget.stop() if isinstance(widget, VideoTab) else None,
+                widget.stop() if isinstance(widget, PackageScriptTab) else None,
             ),
             ensure_tab=self._open_new_default_tab,
         )
@@ -649,12 +680,15 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
 
     def current_webview(self) -> QWebEngineView | None:
         """Return active web tab, never the '+' placeholder widget."""
-        return active_tab(self.tabs, self.plus_widget)
+        webview = active_tab(self.tabs, self.plus_widget)
+        return webview if isinstance(webview, QWebEngineView) else None
 
     def _on_tab_changed(self, index: int):
         """Al cambiar de pestaña, sincroniza el combo de perfiles y la
         barra de dirección con la pestaña recién seleccionada."""
         def sync_tab(webview):
+            if not isinstance(webview, QWebEngineView):
+                return
             meta = self.tab_data.get(id(webview), {})
             self.current_profile_id = meta.get(
                 "profile_id", self.current_profile_id

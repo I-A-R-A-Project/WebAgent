@@ -1,8 +1,8 @@
-# Copilot Instructions for IA Browser
+# Copilot Instructions for WebAgent
 
 ## Project Overview
 
-IA Browser is a desktop web browser built with PyQt6 that manages isolated browser profiles for working with AI agents (Copilot, Claude, Gemini, Codex). Each profile has independent sessions, cookies, cache, and credentials. "Collections" are workspace groupings of bookmarks across profiles with optional Git versioning support.
+WebAgent is a desktop web browser built with PyQt6 that manages isolated browser profiles for working with AI agents (Copilot, Claude, Gemini, Codex). Each profile has independent sessions, cookies, cache, and credentials. "Collections" are workspace groupings of bookmarks across profiles with optional Git versioning support.
 
 **Key architecture layers:**
 - **main.py**: QMainWindow with tabbed interface, profile/collection management, menu system
@@ -22,7 +22,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Data persists in `~/.ia_browser/`:
+Data persists in `%APPDATA%/IARA/WebAgent/`:
 - `profiles.json`: Profile definitions, download folders, home URLs, zoom
 - `collections.json`: Collection definitions with bookmarks and Git settings
 - `session.json`: Tab restoration data
@@ -34,7 +34,8 @@ Data persists in `~/.ia_browser/`:
 
 ### Profile Isolation
 - Each profile has a unique ID, separate QWebEngineProfile, and independent data directory
-- The "Default" profile cannot be deleted and uses `~/.minibrowser/profile` as its storage path
+- The "Default" profile cannot be deleted and uses the centralized
+  `%APPDATA%/IARA/MiniBrowser/profile` storage path
 - Profile switching preserves tab state and restores metadata (profile_id, collection_id)
 - Git integration branches automatically: `profile/<id>-raw` for downloads, `profile/<id>` for reviewed changes
 
@@ -84,7 +85,8 @@ Collections link multiple profiles to a single workspace with optional Git versi
 - `scripts/website_crawl.py`: bounded HTTP crawler with compact JSON output
 - `scripts/website_analyze.py`: compact technical report from crawl JSON
 - `scripts/website_scrape.py`: extract structured rows from crawl URLs
-- `scripts/toggle_autorun.py`: toggle per-folder autorun settings (edits ~/.ia_browser/codex_config.json)
+- `scripts/toggle_autorun.py`: toggle per-folder autorun settings (edits
+  `%APPDATA%/IARA/WebAgent/codex_config.json`)
 - New `autorun` config per-folder: `{ "autorun": { "enabled": false, "command": "" } }` — if enabled, the configured command runs automatically after an agent completes. The main window's agent console runs it, streams output to the execution tab, and warns if it exits with a non-zero code.
 
 ### Adding Agent Functionality
@@ -166,7 +168,7 @@ npm install --global @ast-grep/cli
 
 El servidor `ast-grep-mcp` es opcional y se configura en el cliente MCP. Ofrece
 visualización del AST, prueba de reglas YAML y búsquedas estructurales para
-agentes compatibles. No se inicia automáticamente desde IA Browser.
+agentes compatibles. No se inicia automáticamente desde WebAgent.
 
 Referencias:
 
@@ -184,6 +186,7 @@ AnyAPI documentation:
 
 ⚠️ **Local imports**: main.py inserts parent directory into sys.path; web_common is a sibling, not submodule
 
-⚠️ **Persistent data**: Never commit `~/.ia_browser/` if it contains sessions, credentials, or cookies
+⚠️ **Persistent data**: Never commit `%APPDATA%/IARA/` if it contains sessions,
+credentials, or cookies
 
 ⚠️ **Subprocess safety**: Always use timeouts and capture_output=True; check availability before calling git/codex/copilot
