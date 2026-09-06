@@ -304,6 +304,38 @@
     font-size:11.5px;
     white-space:pre-wrap;
   }
+  .tl-group summary{
+    cursor:pointer;
+    list-style:none;
+  }
+  .tl-group summary::-webkit-details-marker{display:none;}
+  .tl-group summary::before{
+    content:"▸";
+    display:inline-block;
+    width:10px;
+    color:var(--muted-2);
+    font-size:10px;
+    margin-right:-2px;
+  }
+  .tl-group[open] summary::before{content:"▾";}
+  .tl-group .tl-label{color:var(--muted);}
+  .grp-rows{
+    margin:8px 0 2px 26px;
+    display:flex;
+    flex-direction:column;
+    gap:5px;
+    padding-top:8px;
+    border-top:1px solid var(--border-soft);
+  }
+  .grp-row{
+    font-family:var(--mono);
+    font-size:11.5px;
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+  }
+  .grp-row-label{color:var(--text);}
+  .grp-row-meta{color:var(--muted-2);}
 
   .summary-box{
     font-size:13px;
@@ -727,24 +759,87 @@ function iconFor(item){
   return {cls:'', ch:'●'};
 }
 
-function renderTimeline(run){
-  return run.timeline.map(item=>{
-    if(item.type==='note'){
-      return `<div class="tl-item tl-note"><p>${escapeHtml(item.text)}</p></div>`;
-    }
-    if(item.type==='error'){
-      return `<div class="tl-item tl-fail">
-        <div class="tl-head"><span class="tl-icon fail">✗</span><span class="tl-label">Error</span></div>
-        <div class="tl-error">${escapeHtml(item.text)}</div>
-      </div>`;
-    }
-    const ic = iconFor(item);
-    return `<div class="tl-item ${item.type==='fail'?'tl-fail':''}">
-      <div class="tl-head"><span class="tl-icon ${ic.cls}">${ic.ch}</span><span class="tl-label">${escapeHtml(item.label||'')}</span></div>
-      ${item.detail ? `<div class="tl-detail">${escapeHtml(item.detail)}</div>` : ""}
-      ${item.result ? `<div class="tl-result">→ ${escapeHtml(item.result)}</div>` : ""}
+/* group consecutive same-kind action items (search/read/edit/shell/fail runs) */
+function kindOf(item){
+  if(item.type === 'search') return 'search';
+  if(item.type === 'fail') return 'fail';
+  if(item.type === 'action'){
+    const label = item.label || '';
+    if(/^Read\b/.test(label)) return 'read';
+    if(/^Edit\b/.test(label)) return 'edit';
+    if(/\(shell\)/.test(label)) return 'shell';
+    return 'other';
+  }
+  return null; // notes / errors break the run, never grouped
+}
+
+const KIND_META = {
+  search:{cls:'search', ch:'⌕', plural:'búsquedas'},
+  read:{cls:'read', ch:'▤', plural:'lecturas'},
+  edit:{cls:'edit', ch:'✎', plural:'ediciones'},
+  shell:{cls:'shell', ch:'›', plural:'comandos'},
+  fail:{cls:'fail', ch:'✗', plural:'acciones fallidas'},
+  other:{cls:'', ch:'●', plural:'acciones'},
+};
+
+function groupTimeline(timeline){
+  const out = [];
+  let i = 0;
+  while(i < timeline.length){
+    const k = kindOf(timeline[i]);
+    if(k === null){ out.push(timeline[i]); i++; continue; }
+    let j = i + 1;
+    while(j < timeline.length && kindOf(timeline[j]) === k) j++;
+    const run = timeline.slice(i, j);
+    out.push(run.length >= 2 ? {type:'group', kind:k, items:run} : run[0]);
+    i = j;
+  }
+  return out;
+}
+
+function renderSingleItem(item){
+  if(item.type==='note'){
+    return `<div class="tl-item tl-note"><p>${escapeHtml(item.text)}</p></div>`;
+  }
+  if(item.type==='error'){
+    return `<div class="tl-item tl-fail">
+      <div class="tl-head"><span class="tl-icon fail">✗</span><span class="tl-label">Error</span></div>
+      <div class="tl-error">${escapeHtml(item.text)}</div>
     </div>`;
+  }
+  const ic = iconFor(item);
+  return `<div class="tl-item ${item.type==='fail'?'tl-fail':''}">
+    <div class="tl-head"><span class="tl-icon ${ic.cls}">${ic.ch}</span><span class="tl-label">${escapeHtml(item.label||'')}</span></div>
+    ${item.detail ? `<div class="tl-detail">${escapeHtml(item.detail)}</div>` : ""}
+    ${item.result ? `<div class="tl-result">→ ${escapeHtml(item.result)}</div>` : ""}
+  </div>`;
+}
+
+function renderGroup(node){
+  const meta = KIND_META[node.kind] || KIND_META.other;
+  const count = node.items.length;
+  let extra = "";
+  if(node.kind === 'read'){
+    const labels = new Set(node.items.map(it => it.label));
+    if(labels.size === 1){
+      extra = ` · ${escapeHtml([...labels][0].replace(/^Read\s*/,''))}`;
+    }
+  }
+  const rows = node.items.map(it=>{
+    const bits = [];
+    if(it.detail) bits.push(escapeHtml(it.detail));
+    if(it.result) bits.push(`→ ${escapeHtml(it.result)}`);
+    return `<div class="grp-row"><span class="grp-row-label">${escapeHtml(it.label||'')}</span>${bits.length?`<span class="grp-row-meta">${bits.join(' · ')}</span>`:""}</div>`;
   }).join("");
+  return `<details class="tl-item tl-group ${node.kind==='fail'?'tl-fail':''}">
+    <summary class="tl-head"><span class="tl-icon ${meta.cls}">${meta.ch}</span><span class="tl-label">${count} ${meta.plural}${extra}</span></summary>
+    <div class="grp-rows">${rows}</div>
+  </details>`;
+}
+
+function renderTimeline(run){
+  const grouped = groupTimeline(run.timeline);
+  return grouped.map(node => node.type === 'group' ? renderGroup(node) : renderSingleItem(node)).join("");
 }
 
 function renderDetail(){
@@ -755,11 +850,6 @@ function renderDetail(){
   const treeHtml = run.workingTree.length ? `
     <div class="section-label">Working tree al iniciar</div>
     <div class="tree-files">${run.workingTree.map(f=>`<span class="tree-file"><span class="code">${escapeHtml(f.code)}</span>${escapeHtml(f.path)}</span>`).join("")}</div>
-  ` : "";
-
-  const summaryHtml = run.summary ? `
-    <div class="section-label">Resultado final</div>
-    <div class="summary-box">${escapeHtml(run.summary)}</div>
   ` : "";
 
   let diffHtml = "";
@@ -805,7 +895,6 @@ function renderDetail(){
     <div class="section-label">Actividad del agente</div>
     <div class="timeline">${renderTimeline(run) || '<div class="tl-item tl-note"><p>Sin pasos registrados.</p></div>'}</div>
 
-    ${summaryHtml}
     ${diffHtml}
     ${footerHtml}
   `;

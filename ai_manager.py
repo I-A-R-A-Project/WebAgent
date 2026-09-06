@@ -119,6 +119,81 @@ AGENT_DEFS = {
 
 AGENT_ORDER = ["copilot", "codex", "anyapi"]
 
+# Opciones seleccionadas de los help de cada CLI. Se dejan vacías por
+# defecto para conservar exactamente el comportamiento anterior.
+AGENT_OPTION_DEFS = {
+    "copilot": (
+        ("model", "Modelo", ("auto",)),
+        ("reasoning_effort", "Esfuerzo de razonamiento", ("", "none", "minimal", "low", "medium", "high", "xhigh", "max")),
+        ("context", "Contexto", ("", "default", "long_context")),
+        ("mode", "Modo", ("", "interactive", "plan", "autopilot")),
+        ("autopilot", "Autopilot", (False, True)),
+        ("no_ask_user", "No preguntar al usuario", (False, True)),
+        ("max_autopilot_continues", "Máx. continuaciones autopilot", ("",)),
+    ),
+    "codex": (
+        ("model", "Modelo", ("",)),
+        ("sandbox", "Sandbox", ("", "read-only", "workspace-write", "danger-full-access")),
+        ("approval", "Aprobación", ("", "on-request", "never")),
+        ("search", "Búsqueda web", (False, True)),
+        ("profile", "Perfil Codex", ("",)),
+        ("add_dir", "Directorios extra", ("",)),
+    ),
+}
+
+
+def build_agent_command(command_template: str, agent_id: str, options: dict | None = None) -> str:
+    """Agrega opciones configuradas sin duplicarlas si ya están en el comando."""
+    options = options or {}
+    tokens = shlex.split(command_template)
+    additions = []
+
+    def add_flag(flag, value=None):
+        if flag not in tokens:
+            additions.append(flag)
+            if value:
+                additions.append(value)
+
+    if agent_id == "copilot":
+        if options.get("model"):
+            add_flag("--model", options["model"])
+        if options.get("reasoning_effort"):
+            add_flag("--reasoning-effort", options["reasoning_effort"])
+        if options.get("context"):
+            add_flag("--context", options["context"])
+        if options.get("mode"):
+            add_flag("--mode", options["mode"])
+        if options.get("autopilot"):
+            add_flag("--autopilot")
+        if options.get("no_ask_user"):
+            add_flag("--no-ask-user")
+        if options.get("max_autopilot_continues"):
+            add_flag("--max-autopilot-continues", options["max_autopilot_continues"])
+    elif agent_id == "codex":
+        if options.get("model"):
+            add_flag("--model", options["model"])
+        if options.get("sandbox"):
+            add_flag("--sandbox", options["sandbox"])
+        if options.get("approval"):
+            add_flag("--ask-for-approval", options["approval"])
+        if options.get("search"):
+            add_flag("--search")
+        if options.get("profile"):
+            add_flag("--profile", options["profile"])
+        for directory in str(options.get("add_dir", "")).split(";"):
+            directory = directory.strip()
+            if directory:
+                additions.extend(["--add-dir", directory])
+
+    if not additions:
+        return command_template
+    prompt_index = next((i for i, token in enumerate(tokens) if "{prompt}" in token), len(tokens))
+    if prompt_index and tokens[prompt_index - 1] in ("-p", "--prompt"):
+        prompt_index -= 1
+    tokens[prompt_index:prompt_index] = additions
+    return shlex.join(tokens)
+
+
 # Comandos por defecto de versiones anteriores que ya no aplican (se
 # migran solos al default actual si el usuario nunca los tocó a mano).
 LEGACY_DEFAULT_COMMANDS = {
@@ -160,7 +235,7 @@ class AgentConfigStore:
             "source_branch": "master",
             "target_branch": "main",
             "agents": {
-                aid: {"command": defn["default_command"], "last_task": ""}
+                aid: {"command": defn["default_command"], "last_task": "", "options": {}}
                 for aid, defn in AGENT_DEFS.items()
             },
             # Autorun: si enabled=True, ejecutar 'autorun.command' tras un run de agente
@@ -177,14 +252,17 @@ class AgentConfigStore:
         if "agents" not in entry:
             legacy_cmd = entry.pop("codex_command", None)
             entry["agents"] = {
-                aid: {"command": defn["default_command"], "last_task": ""}
+                aid: {"command": defn["default_command"], "last_task": "", "options": {}}
                 for aid, defn in AGENT_DEFS.items()
             }
             if legacy_cmd:
                 entry["agents"]["codex"]["command"] = legacy_cmd
         else:
             for aid, defn in AGENT_DEFS.items():
-                entry["agents"].setdefault(aid, {"command": defn["default_command"], "last_task": ""})
+                entry["agents"].setdefault(
+                    aid, {"command": defn["default_command"], "last_task": "", "options": {}}
+                )
+                entry["agents"][aid].setdefault("options", {})
 
         # Ensure autorun key exists for backward compatibility
         entry.setdefault("autorun", {"enabled": False, "command": ""})
@@ -513,6 +591,28 @@ class AIAgentsDialog(QDialog):
 
     # ---------- Sección: un agente ----------
 
+    def _read_agent_options(self, agent_id: str) -> dict:
+        options = {}
+        for key, widget in self.agent_widgets.get(agent_id, {}).get("option_widgets", {}).items():
+            if isinstance(widget, QCheckBox):
+                value = widget.isChecked()
+            elif isinstance(widget, QComboBox):
+                value = widget.currentData() or ""
+            else:
+                value = widget.text().strip()
+            if value not in ("", False):
+                options[key] = value
+        return options
+
+    def _save_agent_config(self, agent_id: str):
+        widgets = self.agent_widgets[agent_id]
+        self.config_store.set_agent_field(
+            self.folder,
+            agent_id,
+            command=widgets["command_edit"].text().strip() or AGENT_DEFS[agent_id]["default_command"],
+            options=self._read_agent_options(agent_id),
+        )
+
     def _build_agent_tab(self, tab: QWidget, agent_id: str):
         defn = AGENT_DEFS[agent_id]
         tab_layout = QVBoxLayout(tab)
@@ -534,13 +634,33 @@ class AIAgentsDialog(QDialog):
         form = QFormLayout()
         command_edit = QLineEdit(agent_cfg.get("command", defn["default_command"]))
         form.addRow("Comando:", command_edit)
+        option_widgets = {}
+        saved_options = agent_cfg.get("options", {})
+        if agent_id in AGENT_OPTION_DEFS:
+            options_box = QGroupBox("Opciones CLI")
+            options_form = QFormLayout(options_box)
+            for key, label, values in AGENT_OPTION_DEFS[agent_id]:
+                if values and all(isinstance(value, bool) for value in values):
+                    widget = QCheckBox()
+                    widget.setChecked(bool(saved_options.get(key, False)))
+                elif len(values) > 1:
+                    widget = QComboBox()
+                    widget.addItem("(predeterminado)", "")
+                    for value in values:
+                        if value:
+                            widget.addItem(value, value)
+                    index = widget.findData(saved_options.get(key, ""))
+                    widget.setCurrentIndex(max(0, index))
+                else:
+                    widget = QLineEdit(str(saved_options.get(key, "")))
+                    if key == "add_dir":
+                        widget.setPlaceholderText("Separá directorios con ;")
+                option_widgets[key] = widget
+                options_form.addRow(label + ":", widget)
+            tab_layout.addWidget(options_box)
         save_command_btn = QPushButton("Guardar comando")
         save_command_btn.clicked.connect(
-            lambda: self.config_store.set_agent_field(
-                self.folder,
-                agent_id,
-                command=command_edit.text().strip() or defn["default_command"],
-            )
+            lambda: self._save_agent_config(agent_id)
         )
         form.addRow("", save_command_btn)
         tab_layout.addLayout(form)
@@ -567,7 +687,10 @@ class AIAgentsDialog(QDialog):
                 btn_row.addWidget(save_key_btn)
         tab_layout.addLayout(btn_row)
 
-        self.agent_widgets[agent_id] = {"command_edit": command_edit}
+        self.agent_widgets[agent_id] = {
+            "command_edit": command_edit,
+            "option_widgets": option_widgets,
+        }
         if agent_id in ("copilot", "anyapi"):
             self.agent_widgets[agent_id]["token_edit"] = token_edit
 
@@ -659,7 +782,11 @@ class AIAgentsDialog(QDialog):
         self.config_store.set_branches(self.folder, source, target)
 
         widgets = self.agent_widgets[agent_id]
-        extra = {"command": widgets["command_edit"].text().strip() or defn["default_command"]}
+        options = self._read_agent_options(agent_id)
+        extra = {
+            "command": widgets["command_edit"].text().strip() or defn["default_command"],
+            "options": options,
+        }
         # track preview button for UI state
         widgets["preview_btn"] = widgets.get("preview_btn") or None
         if defn["needs_task"]:
@@ -697,6 +824,7 @@ class AIAgentsDialog(QDialog):
 
         prompt = widgets["prompt_edit"].toPlainText().strip()
         command_template = widgets["command_edit"].text().strip() or defn["default_command"]
+        command_template = build_agent_command(command_template, agent_id, options)
 
         # Aplanamos el prompt a una sola línea (defensivo: cmd.exe puede
         # llegar a comportarse raro con saltos de línea embebidos aunque

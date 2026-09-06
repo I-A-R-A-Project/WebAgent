@@ -9,14 +9,15 @@ from pathlib import Path
 from PyQt6.QtCore import QProcess, QProcessEnvironment, Qt
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
-    QComboBox, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-    QFileDialog, QMessageBox, QTabWidget, QVBoxLayout, QWidget,
+    QHBoxLayout, QLineEdit, QPlainTextEdit, QPushButton,
+    QFileDialog, QMessageBox, QTabBar, QTabWidget, QVBoxLayout, QWidget,
 )
 from paths import COPILOT_PROFILES_DIR
 from paths import IA_DATA_DIR
 
-from ai_manager import AGENT_DEFS, AGENT_ORDER, AgentConfigStore
+from ai_manager import AGENT_DEFS, AgentConfigStore, build_agent_command
 from file_ops import GitVersioning
+from web_common.tabs import prepare_tab_widget
 
 
 class TaskInput(QPlainTextEdit):
@@ -50,8 +51,10 @@ class AgentConsolePanel(QWidget):
         self.auth_url_handler = auth_url_handler
         self.auth_success_handler = auth_success_handler
         self.process = None
+        self.current_agent_id = None
         self.copilot_login_process = None
         self.autorun_process = None
+        self._autorun_output = None
         self.current_output = None
         self._log_file = None
         self._git_start_head = None
@@ -63,14 +66,11 @@ class AgentConsolePanel(QWidget):
 
         layout = QVBoxLayout(self)
         controls = QHBoxLayout()
-        self.agent_combo = QComboBox()
-        for agent_id in AGENT_ORDER:
-            self.agent_combo.addItem(AGENT_DEFS[agent_id]["short_label"], agent_id)
-        controls.addWidget(QLabel("IA:"))
-        controls.addWidget(self.agent_combo)
         self.task_edit = TaskInput(self.run_agent)
         self.task_edit.setFixedHeight(76)
-        self.task_edit.setPlaceholderText("Tarea para el agente... (Shift+Enter para ejecutar)")
+        self.task_edit.setPlaceholderText(
+            "copilot, codex o anyapi seguido de la tarea... (Shift+Enter para ejecutar)"
+        )
         controls.addWidget(self.task_edit, 1)
         buttons = QVBoxLayout()
         self.run_btn = QPushButton("▶ Ejecutar")
@@ -92,6 +92,10 @@ class AgentConsolePanel(QWidget):
         layout.addLayout(controls)
 
         self.tabs = QTabWidget()
+        prepare_tab_widget(self.tabs)
+        self.tabs.tabCloseRequested.connect(
+            lambda index: self._close_output_tab(self.tabs.widget(index))
+        )
         layout.addWidget(self.tabs, 1)
         self.stdin_edit = QLineEdit()
         self.stdin_edit.setPlaceholderText("Responder al agente y presionar Enter...")
@@ -164,7 +168,7 @@ class AgentConsolePanel(QWidget):
             return None
         folder = self._working_folder()
         if not Path(folder).is_dir():
-            self._new_tab(agent_id, f"Directorio inexistente: {folder}")
+            self._new_tab(agent_id, f"Directorio inexistente: {folder}", finished=True)
             return
         config = AgentConfigStore().get(folder)
         environment = QProcessEnvironment.systemEnvironment()
@@ -183,34 +187,61 @@ class AgentConsolePanel(QWidget):
     def run_agent(self):
         if self.process is not None:
             return
-        if not self.profile_getter():
+        raw_task = self.task_edit.toPlainText().strip()
+        if not raw_task:
+            return
+        parts = raw_task.split(None, 1)
+        agent_id = parts[0].lower().rstrip(":")
+        if agent_id not in AGENT_DEFS:
             self._new_tab(
-                self.agent_combo.currentData(),
-                "No hay un perfil disponible para agentes. Creá uno distinto de Default.",
+                "command",
+                f"IA no reconocida: {parts[0]}. Usá copilot, codex o anyapi.",
+                finished=True,
             )
             return
-        agent_id = self.agent_combo.currentData()
+        if len(parts) == 1 or not parts[1].strip():
+            self._new_tab(
+                agent_id,
+                f"Falta la tarea después de «{parts[0]}».",
+                finished=True,
+            )
+            return
+        task = parts[1].strip()
+        self.current_agent_id = agent_id
+        if not self.profile_getter():
+            self._new_tab(
+                agent_id,
+                "No hay un perfil disponible para agentes. Creá uno distinto de Default.",
+                finished=True,
+            )
+            return
         self._auth_warning_shown.discard(agent_id)
         self._copilot_output_buffer = ""
         self._copilot_auth_urls_seen.clear()
-        task = self.task_edit.toPlainText().strip()
-        if not task:
-            return
         folder = self._working_folder()
         config = AgentConfigStore().get(folder)
         command = config["agents"][agent_id].get("command", AGENT_DEFS[agent_id]["default_command"])
+        command = build_agent_command(
+            command,
+            agent_id,
+            config["agents"][agent_id].get("options", {}),
+        )
         prompt = task
         if agent_id == "copilot":
             prompt += self._git_context()
         try:
             tokens = shlex.split(command)
         except ValueError as exc:
-            self._new_tab(agent_id, f"Comando inválido: {exc}")
+            self._new_tab(agent_id, f"Comando inválido: {exc}", finished=True)
             return
         script_dir = str(Path(__file__).resolve().parent)
         argv = [token.replace("{prompt}", prompt).replace("{script_dir}", script_dir) for token in tokens]
         if not argv or shutil.which(argv[0]) is None:
-            self._new_tab(agent_id, f"No se encontró el comando: {argv[0] if argv else '(vacío)'}")
+            self._new_tab(
+                agent_id,
+                f"No se encontró el comando: {argv[0] if argv else '(vacío)'}",
+                finished=True,
+            )
             return
         self._start_log(agent_id, folder, " ".join(argv), task)
         self._new_tab(agent_id, f"$ {' '.join(argv)}\n\n")
@@ -232,7 +263,7 @@ class AgentConsolePanel(QWidget):
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
 
-    def _new_tab(self, agent_id, initial=""):
+    def _new_tab(self, agent_id, initial="", finished=False):
         self.current_output = QPlainTextEdit()
         self.current_output.setReadOnly(True)
         self.current_output.setFont(QFont("Consolas", 10))
@@ -240,15 +271,34 @@ class AgentConsolePanel(QWidget):
         label = AGENT_DEFS.get(agent_id, {}).get("short_label", "Comando")
         index = self.tabs.addTab(self.current_output, f"{label} · ejecución")
         self.tabs.setCurrentIndex(index)
+        self._add_close_button(self.current_output, enabled=finished)
+
+    def _add_close_button(self, output, enabled=True):
+        """Crea el botón de cierre y controla cuándo puede usarse."""
+        index = self.tabs.indexOf(output)
+        if index < 0:
+            return
+        close_btn = self.tabs.tabBar().tabButton(index, QTabBar.ButtonPosition.RightSide)
+        if close_btn is not None:
+            close_btn.setEnabled(enabled)
+
+    def _close_output_tab(self, output):
+        index = self.tabs.indexOf(output)
+        if index < 0:
+            return
+        self.tabs.removeTab(index)
+        output.deleteLater()
+        if self.current_output is output:
+            self.current_output = None
 
     def _read_output(self):
         if self.process and self.current_output:
             data = bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")
             self._write_log(data)
-            if self.agent_combo.currentData() == "copilot":
+            if self.current_agent_id == "copilot":
                 self._copilot_output_buffer += data
                 self._open_copilot_auth_url(data)
-            self._detect_auth_error(self.agent_combo.currentData(), data)
+            self._detect_auth_error(self.current_agent_id, data)
             self.current_output.insertPlainText(data)
             self.current_output.moveCursor(self.current_output.textCursor().MoveOperation.End)
 
@@ -405,22 +455,26 @@ class AgentConsolePanel(QWidget):
         autorun = config.get("autorun", {})
         command = autorun.get("command", "") if autorun.get("enabled") else ""
         if command:
-            self._run_autorun(command)
+            if not self._run_autorun(command):
+                self._add_close_button(self.current_output)
         else:
             self._write_git_diff()
+            self._add_close_button(self.current_output)
 
     def _run_autorun(self, command):
         if self.autorun_process is not None:
-            return
+            return False
         if not self.profile_getter():
-            return
-        if self.current_output:
-            self.current_output.appendPlainText(f"\n--- autorun: {command} ---\n")
+            return False
+        output = self.current_output
+        self._autorun_output = output
+        if output:
+            output.appendPlainText(f"\n--- autorun: {command} ---\n")
         self._write_log(f"\n--- autorun: {command} ---\n")
         process = QProcess(self)
         self.autorun_process = process
         process.setWorkingDirectory(self._working_folder())
-        process.setProcessEnvironment(self._environment(self.agent_combo.currentData()))
+        process.setProcessEnvironment(self._environment(self.current_agent_id))
         process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         process.readyReadStandardOutput.connect(self._read_autorun_output)
         process.finished.connect(self._autorun_finished)
@@ -428,20 +482,24 @@ class AgentConsolePanel(QWidget):
             process.start("cmd.exe", ["/c", command])
         else:
             process.start(command)
+        return True
 
     def _read_autorun_output(self):
-        if self.autorun_process and self.current_output:
+        if self.autorun_process and self._autorun_output:
             data = bytes(self.autorun_process.readAllStandardOutput()).decode(
                 "utf-8", errors="replace"
             )
             self._write_log(data)
-            self.current_output.insertPlainText(data)
-            self.current_output.moveCursor(self.current_output.textCursor().MoveOperation.End)
+            self._autorun_output.insertPlainText(data)
+            self._autorun_output.moveCursor(
+                self._autorun_output.textCursor().MoveOperation.End
+            )
 
     def _autorun_finished(self, exit_code, _status):
         self._read_autorun_output()
-        if self.current_output:
-            self.current_output.appendPlainText(
+        output = self._autorun_output
+        if output:
+            output.appendPlainText(
                 f"\n--- autorun terminó (código {exit_code}) ---"
             )
         self._write_log(f"\n--- autorun terminó (código {exit_code}) ---\n")
@@ -453,3 +511,5 @@ class AgentConsolePanel(QWidget):
             )
         self._write_git_diff()
         self.autorun_process = None
+        self._autorun_output = None
+        self._add_close_button(output)

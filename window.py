@@ -31,6 +31,7 @@ from agent_console import AgentConsolePanel
 from agent_runs import render_agent_runs_page
 from package_script_tab import PackageScriptTab
 from web_common.json_store import SidebarAppsStore
+from web_common.history import HistoryDialog, HistoryStore
 from web_common.navbar import BasicNavbar, bind_navigation, save_web_page
 from web_common.navigation import (
     active_tab, adjust_zoom, handle_tab_changed, navigate_view, new_tab_page,
@@ -81,6 +82,8 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         )
         self.web_engine_profiles: dict[str, QWebEngineProfile] = {}
         self.current_profile_id = self.profile_manager.profiles[0]["id"]
+        self.history = HistoryStore(str(self.profile_manager.base_dir / "history.db"))
+        self.history_session_id = self.history.new_session_id()
         self.session_file = self.profile_manager.base_dir / "session.json"
         self.session_autosaver = SessionAutoSaver(self._save_session)
 
@@ -340,6 +343,11 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
 
         self.rail = SidebarRail()
         self.rail.on_toggle = self._on_sidebar_app_clicked
+        self.rail.on_favicon_changed = (
+            lambda app_id, favicon: self.sidebar_apps_store.update_item(
+                app_id, favicon=favicon
+            )
+        )
         self.rail.rebuild(self.sidebar_apps_store.all())
 
         default_profile_id = self.profile_manager.get_default_profile_id()
@@ -454,6 +462,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             navbar,
             self.current_webview,
             address_handler=self._on_address_bar_enter,
+            history_handler=self.show_history,
             reload_handler=self._reload_current_webview,
             save_handler=lambda: save_web_page(
                 self.current_webview(),
@@ -534,6 +543,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
                 self.tabs, tab, icon
             ),
             special_local_handler=self.handle_special_local_file,
+            load_finished_handler=self._record_history,
         )
 
         self.tab_data[id(webview)] = {"profile_id": profile_id, "collection_id": collection_id}
@@ -603,10 +613,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             if task and profile:
                 if not self._ensure_agent_profile():
                     return
-                self.agent_console.agent_combo.setCurrentIndex(
-                    self.agent_console.agent_combo.findData("copilot")
-                )
-                self.agent_console.task_edit.setPlainText(task["text"])
+                self.agent_console.task_edit.setPlainText(f"copilot {task['text']}")
                 self.agent_console.setVisible(True)
                 self.console_toggle.setText("⌃ Ocultar consola")
             return
@@ -653,6 +660,23 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             plus_widget=self.plus_widget,
             extra_callback=self._refresh_collection_icon,
         )
+
+    def _record_history(self, webview, ok):
+        url = webview.url()
+        if not ok or url.isEmpty() or url.toString() in ("about:blank", "about:srcdoc"):
+            return
+        self.history.add_history(
+            url.toString(),
+            webview.title() or url.toString(),
+            self.history_session_id,
+        )
+
+    def show_history(self):
+        dialog = HistoryDialog(
+            self.history,
+            on_open=lambda url: self._add_tab(profile_id=self.current_profile_id).setUrl(QUrl(url)),
+        )
+        dialog.exec()
 
     def _toggle_devtools(self):
         default_id = self.profile_manager.get_default_profile_id()
