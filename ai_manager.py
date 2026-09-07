@@ -36,6 +36,22 @@ from file_ops import GitVersioning
 from paths import COPILOT_PROFILES_DIR, IA_DATA_DIR
 
 
+AUTORUN_ALLOWED_COMMANDS = {"git", "git.exe", "git.cmd", "npm", "npm.exe", "npm.cmd"}
+
+
+def validate_autorun_command(command: str) -> tuple[bool, str]:
+    """Valida que autorun ejecute solamente git o npm sin encadenar comandos."""
+    command = command.strip()
+    if not command:
+        return False, "El comando no puede estar vacío."
+    if re.search(r"[;&|<>()`\r\n%]", command) or "$(" in command:
+        return False, "No se permiten operadores, redirecciones ni sustitución de comandos."
+    match = re.match(r"""^\s*(['"]?)([A-Za-z0-9_.-]+)\1(?:\s|$)""", command)
+    if not match or match.group(2).lower() not in AUTORUN_ALLOWED_COMMANDS:
+        return False, "El comando debe comenzar con git o npm."
+    return True, ""
+
+
 # ======================================================================
 # Definición de los agentes: comando por defecto, prompt, requisitos
 # ======================================================================
@@ -230,6 +246,16 @@ class AgentConfigStore:
         with open(self.config_file, "w") as f:
             json.dump(self.data, f, indent=2)
 
+    def get_console_directory(self) -> str:
+        """Devuelve el último directorio usado por la consola de agentes."""
+        directory = self.data.get("console_directory", "")
+        return directory if isinstance(directory, str) else ""
+
+    def set_console_directory(self, directory: str):
+        """Recuerda el directorio de trabajo de la consola entre sesiones."""
+        self.data["console_directory"] = str(Path(directory).expanduser())
+        self.save()
+
     def _default_entry(self) -> dict:
         return {
             "source_branch": "master",
@@ -303,6 +329,10 @@ class AgentConfigStore:
         self.save()
 
     def set_autorun(self, folder: str, enabled: bool, command: str):
+        if enabled:
+            valid, error = validate_autorun_command(command)
+            if not valid:
+                raise ValueError(error)
         entry = self.get(folder)
         entry["autorun"] = {"enabled": bool(enabled), "command": command}
         self.data[str(folder)] = entry
@@ -577,13 +607,18 @@ class AIAgentsDialog(QDialog):
         enabled = QCheckBox("Ejecutar automáticamente")
         enabled.setChecked(bool(autorun.get("enabled")))
         command = QLineEdit(autorun.get("command", ""))
-        command.setPlaceholderText("Ej: python -m pytest -q")
+        command.setPlaceholderText("Ej: npm test o git status")
         save = QPushButton("Guardar autorun")
-        save.clicked.connect(
-            lambda: self.config_store.set_autorun(
-                self.folder, enabled.isChecked(), command.text().strip()
-            )
-        )
+        def save_autorun():
+            try:
+                self.config_store.set_autorun(
+                    self.folder, enabled.isChecked(), command.text().strip()
+                )
+            except ValueError as exc:
+                QMessageBox.warning(self, "Autorun inválido", str(exc))
+                return
+            QMessageBox.information(self, "Autorun guardado", "Solo se permiten comandos git y npm.")
+        save.clicked.connect(save_autorun)
         form.addRow(enabled)
         form.addRow("Comando:", command)
         form.addRow("", save)
@@ -1029,8 +1064,13 @@ class AIAgentsDialog(QDialog):
         if autorun_enabled and not start_login and not retry_copilot:
             cmd = autorun.get("command")
             if cmd:
-                self._append_log(f"\n--- Ejecutando autorun: {cmd} ---\n")
-                self._run_autorun(cmd)
+                valid, error = validate_autorun_command(cmd)
+                if valid:
+                    self._append_log(f"\n--- Ejecutando autorun: {cmd} ---\n")
+                    self._run_autorun(cmd)
+                else:
+                    self._append_log(f"\n--- Autorun bloqueado: {error} ---\n")
+                    QMessageBox.warning(self, "Autorun bloqueado", error)
 
         # If we were running in preview, after autorun/refresh we should show diff and cleanup
         if getattr(self, 'preview_mode', False) and getattr(self, 'preview_branch', None):
@@ -1214,6 +1254,10 @@ class AIAgentsDialog(QDialog):
 
     def _run_autorun(self, command: str):
         """Ejecuta un comando local (autorun) en la carpeta y vuelca su salida al log."""
+        valid, error = validate_autorun_command(command)
+        if not valid:
+            self._append_log(f"\n--- Autorun bloqueado: {error} ---\n")
+            return
         if getattr(self, 'autourun_process', None) is not None:
             return
         self.autorun_process = QProcess(self)

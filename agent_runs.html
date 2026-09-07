@@ -117,6 +117,108 @@
     font-family:var(--sans);
   }
 
+  .view-toggle{
+    display:flex;
+    gap:2px;
+    background:#101218;
+    border:1px solid var(--border-soft);
+    border-radius:8px;
+    padding:2px;
+    flex:0 0 auto;
+  }
+  .view-btn{
+    background:transparent;
+    border:none;
+    color:var(--muted);
+    font-family:var(--sans);
+    font-size:12px;
+    padding:6px 12px;
+    border-radius:6px;
+    cursor:pointer;
+  }
+  .view-btn.active{
+    background:var(--panel-2);
+    color:var(--text);
+  }
+  .view-btn:hover:not(.active){color:var(--text);}
+
+  .dashboard{
+    flex:1 1 auto;
+    overflow-y:auto;
+    padding:22px 30px 60px;
+  }
+  .dash-overview{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+    margin-bottom:22px;
+  }
+  .dash-overview .stat{padding:9px 16px;}
+  .dash-overview .stat b{font-size:18px;}
+
+  .profile-grid{
+    display:grid;
+    grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));
+    gap:14px;
+  }
+  .profile-card{
+    background:var(--panel);
+    border:1px solid var(--border-soft);
+    border-radius:10px;
+    padding:16px;
+  }
+  .profile-head{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    margin-bottom:12px;
+  }
+  .profile-avatar{
+    width:34px;height:34px;border-radius:50%;
+    background:linear-gradient(135deg,#2c3040,#1c1f29);
+    border:1px solid var(--border-soft);
+    display:flex;align-items:center;justify-content:center;
+    font-weight:700;font-size:13px;color:var(--amber);
+    flex:0 0 auto;
+  }
+  .profile-name{font-size:14px;font-weight:600;}
+  .profile-sub{font-size:11px;color:var(--muted-2);font-family:var(--mono);margin-top:2px;}
+  .credit-bar{
+    height:5px;
+    background:#20232c;
+    border-radius:3px;
+    overflow:hidden;
+    margin-bottom:12px;
+  }
+  .credit-bar-fill{
+    height:100%;
+    background:linear-gradient(90deg,#e2a63b,#e8c27e);
+    border-radius:3px;
+  }
+  .profile-metrics{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px;
+    font-family:var(--mono);
+    font-size:11.5px;
+    color:var(--muted);
+    margin-bottom:10px;
+  }
+  .profile-metrics .metric b{color:var(--text);}
+  .profile-metrics .metric.success b{color:var(--green);}
+  .profile-metrics .metric.error b{color:var(--red);}
+  .agent-badges{display:flex;flex-wrap:wrap;gap:6px;}
+  .agent-badge{
+    font-family:var(--mono);
+    font-size:10.5px;
+    background:#20232c;
+    border:1px solid var(--border-soft);
+    color:var(--muted);
+    padding:2px 7px;
+    border-radius:5px;
+  }
+  .agent-badge b{color:var(--text);}
+
   /* ---------- body layout ---------- */
   .layout{
     flex:1 1 auto;
@@ -396,7 +498,20 @@
   .diff-line.del{background:rgba(229,99,107,.12); color:#f4b3b8;}
   .diff-line.hunk{color:var(--amber); background:#241f16;}
   .diff-line.meta{color:var(--muted-2);}
+  .diff-line.filehead{color:var(--text); font-weight:600;}
   .diff-line.ctx{color:#aeb2c0;}
+
+  .cmd-output{
+    max-height:520px;
+    overflow:auto;
+    font-family:var(--mono);
+    font-size:12px;
+    line-height:1.55;
+    background:#111318;
+    border:1px solid var(--border-soft);
+    border-radius:7px;
+    padding:8px 0;
+  }
 
   .footer-stats{
     display:flex;
@@ -438,8 +553,12 @@
     <h1>IARA</h1>
     <span>· registro de corridas de Copilot</span>
   </div>
+  <div class="view-toggle">
+    <button class="view-btn active" data-view="list">Corridas</button>
+    <button class="view-btn" data-view="dashboard">Dashboard</button>
+  </div>
   <div class="stats" id="stats"></div>
-  <div class="controls">
+  <div class="controls" id="listControls">
     <input type="text" id="searchBox" placeholder="Buscar en tareas o comandos…">
     <select id="statusFilter">
       <option value="all">Todos los estados</option>
@@ -449,6 +568,7 @@
       <option value="auth">Falla de auth</option>
     </select>
     <select id="branchFilter"><option value="all">Todas las ramas</option></select>
+    <select id="profileFilter"><option value="all">Todos los perfiles</option></select>
     <select id="sortOrder">
       <option value="new">Más recientes</option>
       <option value="old">Más antiguos</option>
@@ -457,10 +577,12 @@
   </div>
 </header>
 
-<div class="layout">
+<div class="layout" id="listView">
   <div class="runlist" id="runlist"></div>
   <div class="detail" id="detail"><div class="placeholder">Elegí una corrida de la izquierda</div></div>
 </div>
+
+<div class="dashboard" id="dashboardView" style="display:none;"></div>
 
 <script>
 const RAW_LOGS = [];
@@ -476,9 +598,13 @@ function parseLog(filename, rawOriginal){
 
   const get = (re) => { const m = raw.match(re); return m ? m[1].trim() : null; };
 
+  const agentLabel = get(/^=== (.+) ===\s*$/m) || "Comando";
   const startedStr = get(/^started:\s*(.+)$/m);
+  const profileId = get(/^profile_id:\s*(.+)$/m);
+  const profileName = get(/^profile:\s*(.+)$/m) || profileId;
   const cwd = get(/^cwd:\s*(.+)$/m);
   const branch = get(/Contexto Git:\s*rama=(\S+)/) || "—";
+  const isCommandRun = agentLabel === "Comando";
 
   // working tree block
   let workingTree = [];
@@ -508,15 +634,6 @@ function parseLog(filename, rawOriginal){
   while((em = exitRe.exec(raw)) !== null){ lastEm = em; }
   if(lastEm){ exitLabel = lastEm[1]; exitCode = lastEm[2]; }
 
-  const hasAuthError = /Error:\s*Authentication token/i.test(raw) || /no autenticado/i.test(raw);
-  const permDeniedCount = (raw.match(/Permission denied/g) || []).length;
-
-  let status = "unknown";
-  if(hasAuthError) status = "auth";
-  else if(permDeniedCount > 0) status = "blocked";
-  else if(exitCode === "0") status = "success";
-  else if(exitCode !== null) status = "error";
-
   // footer start index, to bound the narrative body
   let footerIdx = raw.length;
   const footerSearch = raw.search(/\n\n\nChanges\s+\+/);
@@ -528,39 +645,75 @@ function parseLog(filename, rawOriginal){
 
   const bodyRaw = raw.slice(bodyStart, footerIdx).trim();
 
-  // split narrative body into blocks by blank line
-  const paragraphs = bodyRaw.split(/\n\n+/).map(p=>p.trim()).filter(Boolean);
-  const timeline = paragraphs.map(p => {
-    const lines = p.split("\n");
-    const first = lines[0];
-    let type = "note";
-    if(first.startsWith("/ ")) type = "search";
-    else if(first.startsWith("✗")) type = "fail";
-    else if(first.startsWith("●")) type = "action";
-    else if(first.startsWith("Error:") || /^\s*Failed to|^\s*To authenticate|^\s*•/.test(first)) type = "error";
-
-    if(type === "note" || type === "error"){
-      return {type, text:p};
-    }
-    const label = first.replace(/^[✗●\/]\s*/, "");
-    const detailLines = [];
-    const resultLines = [];
-    for(let i=1;i<lines.length;i++){
-      const l = lines[i];
-      if(/^\s*│/.test(l)) detailLines.push(l.replace(/^\s*│\s?/,""));
-      else if(/^\s*└/.test(l)) resultLines.push(l.replace(/^\s*└\s?/,""));
-      else detailLines.push(l.trim());
-    }
-    return {type, label, detail:detailLines.join(" ").trim(), result:resultLines.join(" ").trim()};
-  });
-
-  // trailing summary: last "note" paragraphs right before the footer often hold the agent's final message.
-  // We already have them inside timeline as type note; pull the LAST contiguous note-run as "summary".
-  let summary = "";
-  for(let i=timeline.length-1;i>=0;i--){
-    if(timeline[i].type === "note"){ summary = timeline[i].text + (summary?("\n\n"+summary):""); }
-    else break;
+  // Detección de fallas de auth/permisos: NUNCA sobre "raw" completo, porque
+  // los diffs de código incluidos en el log (por ejemplo, un `git diff` que
+  // toca este mismo archivo) pueden contener esas mismas palabras como texto
+  // literal y disparar falsos positivos. Para "Comando" el estado ya lo da
+  // el código de salida del proceso; para agentes, sólo miramos su relato
+  // (bodyRaw) e ignoramos las líneas que son contenido de diff (+/-/@@/etc).
+  let hasAuthError = false;
+  let permDeniedCount = 0;
+  if(!isCommandRun){
+    const narrativeOnly = bodyRaw.split("\n")
+      .filter(l => !/^(diff --git |index [0-9a-fA-F]|@@ |\+\+\+ |--- |[+-])/.test(l))
+      .join("\n");
+    hasAuthError = /Error:\s*Authentication token/i.test(narrativeOnly) || /no autenticado/i.test(narrativeOnly);
+    permDeniedCount = (narrativeOnly.match(/Permission denied/g) || []).length;
   }
+
+  let status = "unknown";
+  if(hasAuthError) status = "auth";
+  else if(permDeniedCount > 0) status = "blocked";
+  else if(exitCode === "0") status = "success";
+  else if(exitCode !== null) status = "error";
+
+  // Los "Comando" (git/npm sueltos) vuelcan salida cruda de la terminal:
+  // no tiene sentido partirla en pasos de "actividad del agente" como con
+  // Copilot/Codex, así que la guardamos aparte para mostrarla tal cual.
+  let timeline = [];
+  let summary = "";
+  let commandOutput = null;
+  if(isCommandRun){
+    commandOutput = bodyRaw;
+  } else {
+    // split narrative body into blocks by blank line
+    const paragraphs = bodyRaw.split(/\n\n+/).map(p=>p.trim()).filter(Boolean);
+    timeline = paragraphs.map(p => {
+      const lines = p.split("\n");
+      const first = lines[0];
+      let type = "note";
+      if(first.startsWith("/ ")) type = "search";
+      else if(first.startsWith("✗")) type = "fail";
+      else if(first.startsWith("●")) type = "action";
+      else if(first.startsWith("Error:") || /^\s*Failed to|^\s*To authenticate|^\s*•/.test(first)) type = "error";
+
+      if(type === "note" || type === "error"){
+        return {type, text:p};
+      }
+      const label = first.replace(/^[✗●\/]\s*/, "");
+      const detailLines = [];
+      const resultLines = [];
+      for(let i=1;i<lines.length;i++){
+        const l = lines[i];
+        if(/^\s*│/.test(l)) detailLines.push(l.replace(/^\s*│\s?/,""));
+        else if(/^\s*└/.test(l)) resultLines.push(l.replace(/^\s*└\s?/,""));
+        else detailLines.push(l.trim());
+      }
+      return {type, label, detail:detailLines.join(" ").trim(), result:resultLines.join(" ").trim()};
+    });
+
+    // trailing summary: last "note" paragraphs right before the footer often hold the agent's final message.
+    // We already have them inside timeline as type note; pull the LAST contiguous note-run as "summary".
+    for(let i=timeline.length-1;i>=0;i--){
+      if(timeline[i].type === "note"){ summary = timeline[i].text + (summary?("\n\n"+summary):""); }
+      else break;
+    }
+  }
+
+  // Comandos "git diff" sueltos: la salida es exactamente el mismo diff que
+  // ya se muestra, coloreado y por archivo, en "Diff exacto de la ejecución".
+  // Mostrarla dos veces es puro ruido, así que la ocultamos en ese caso.
+  const isGitDiffCommand = isCommandRun && /^git diff\b/i.test(taskText.trim());
 
   let started = null;
   if(startedStr){
@@ -571,8 +724,9 @@ function parseLog(filename, rawOriginal){
   const diffSections = parseDiffSection(raw);
 
   return {
-    filename, started, startedStr, cwd, branch, workingTree, taskText,
-    timeline, summary, status, diffSections,
+    filename, started, startedStr, agentLabel, isCommandRun, isGitDiffCommand,
+    profileId, profileName, cwd, branch, workingTree, taskText,
+    timeline, summary, commandOutput, status, diffSections,
     exitCode, exitLabel,
     changes: changesMatch ? {added:+changesMatch[1], removed:+changesMatch[2]} : null,
     credits: creditsMatch ? {amount:+creditsMatch[1], duration:creditsMatch[2]||null} : null,
@@ -619,6 +773,24 @@ function renderDiffBody(body){
   return parts.map(renderFileDiff).join("");
 }
 
+function classifyLine(l){
+  if(l.startsWith("diff --git ")) return "filehead";
+  if(/^(index |new file|deleted file|similarity index|rename (from|to)|old mode|new mode)/.test(l)) return "meta";
+  if(l.startsWith("+++") || l.startsWith("---")) return "meta";
+  if(l.startsWith("+")) return "add";
+  if(l.startsWith("-")) return "del";
+  if(l.startsWith("@@")) return "hunk";
+  return "ctx";
+}
+
+function renderColoredBlock(text){
+  if(!text) return "";
+  return text.split("\n").map(l=>{
+    const cls = classifyLine(l);
+    return `<div class="diff-line ${cls}">${escapeHtml(l) || "&nbsp;"}</div>`;
+  }).join("");
+}
+
 function renderFileDiff(chunk){
   const lines = chunk.split("\n");
   const headerLine = lines[0] || "";
@@ -628,12 +800,9 @@ function renderFileDiff(chunk){
   let added = 0, removed = 0;
   const bodyLines = lines.slice(1);
   const htmlLines = bodyLines.map(l=>{
-    let cls = "ctx";
-    if(l.startsWith("+++") || l.startsWith("---")) cls = "meta";
-    else if(l.startsWith("+")){ cls = "add"; added++; }
-    else if(l.startsWith("-")){ cls = "del"; removed++; }
-    else if(l.startsWith("@@")) cls = "hunk";
-    else if(/^(index |new file|deleted file|similarity|rename|old mode|new mode)/.test(l)) cls = "meta";
+    const cls = classifyLine(l);
+    if(cls === "add") added++;
+    if(cls === "del") removed++;
     return `<div class="diff-line ${cls}">${escapeHtml(l) || "&nbsp;"}</div>`;
   }).join("");
   return `<details class="diff-file" open>
@@ -654,7 +823,9 @@ let activeId = null;
 let filterText = "";
 let filterStatus = "all";
 let filterBranch = "all";
+let filterProfile = "all";
 let sortOrder = "new";
+let currentView = "list";
 
 const STATUS_LABEL = {success:"Éxito", error:"Error", blocked:"Bloqueado (permisos)", auth:"Falla de autenticación", unknown:"Sin datos"};
 
@@ -672,6 +843,13 @@ function buildBranchOptions(){
   const branches = [...new Set(RUNS.map(r=>r.branch))];
   sel.innerHTML = '<option value="all">Todas las ramas</option>' +
     branches.map(b=>`<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join("");
+}
+
+function buildProfileOptions(){
+  const sel = document.getElementById('profileFilter');
+  const profiles = [...new Set(RUNS.map(r=>r.profileName || "Sin perfil"))];
+  sel.innerHTML = '<option value="all">Todos los perfiles</option>' +
+    profiles.map(p=>`<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("");
 }
 
 function escapeHtml(s){
@@ -702,8 +880,9 @@ function filteredSorted(){
   let list = RUNS.filter(r=>{
     if(filterStatus!=='all' && r.status!==filterStatus) return false;
     if(filterBranch!=='all' && r.branch!==filterBranch) return false;
+    if(filterProfile!=='all' && (r.profileName || "Sin perfil")!==filterProfile) return false;
     if(filterText){
-      const hay = (r.taskText+" "+r.cwd+" "+r.filename).toLowerCase();
+      const hay = (r.taskText+" "+(r.profileName||"")+" "+(r.profileId||"")+" "+r.cwd+" "+r.filename).toLowerCase();
       if(!hay.includes(filterText.toLowerCase())) return false;
     }
     return true;
@@ -739,6 +918,7 @@ function renderList(){
         </div>
         <div class="run-title">${escapeHtml(title)}</div>
         <div class="run-meta">
+          ${r.profileName ? `<span>${escapeHtml(r.profileName)}</span>` : ""}
           ${r.credits ? `<span>${r.credits.amount.toFixed(2)} cr</span>` : ""}
           ${r.changes ? `<span>+${r.changes.added} -${r.changes.removed}</span>` : ""}
         </div>
@@ -852,6 +1032,11 @@ function renderDetail(){
     <div class="tree-files">${run.workingTree.map(f=>`<span class="tree-file"><span class="code">${escapeHtml(f.code)}</span>${escapeHtml(f.path)}</span>`).join("")}</div>
   ` : "";
 
+  const summaryHtml = run.summary ? `
+    <div class="section-label">Resultado final</div>
+    <div class="summary-box">${escapeHtml(run.summary)}</div>
+  ` : "";
+
   let diffHtml = "";
   if(run.diffSections && run.diffSections.length){
     diffHtml = `<div class="section-label">Diff exacto de la ejecución</div>` +
@@ -874,6 +1059,22 @@ function renderDetail(){
     </div>
   `;
 
+  let activityHtml = "";
+  if(run.isGitDiffCommand){
+    // El diff ya se muestra abajo, coloreado y por archivo; mostrarlo también
+    // acá como salida cruda sería puro ruido duplicado.
+  } else if(run.isCommandRun){
+    activityHtml = run.commandOutput ? `
+      <div class="section-label">Salida del comando</div>
+      <div class="cmd-output">${renderColoredBlock(run.commandOutput)}</div>
+    ` : "";
+  } else {
+    activityHtml = `
+      <div class="section-label">Actividad del agente</div>
+      <div class="timeline">${renderTimeline(run) || '<div class="tl-item tl-note"><p>Sin pasos registrados.</p></div>'}</div>
+    `;
+  }
+
   el.innerHTML = `
     <div class="detail-head">
       <span class="status-pill ${run.status}">${STATUS_LABEL[run.status]}</span>
@@ -881,6 +1082,7 @@ function renderDetail(){
         <div class="detail-title">${escapeHtml(run.taskText.split("\n")[0])}</div>
         <div class="detail-sub">
           <span><b>${fmtTime(run.started)}</b> · ${escapeHtml(fmtDay(run.started))}</span>
+          ${run.profileName ? `<span>perfil <b>${escapeHtml(run.profileName)}</b></span>` : ""}
           <span>rama <b>${escapeHtml(run.branch)}</b></span>
           <span title="${escapeHtml(run.cwd||'')}">${escapeHtml((run.cwd||'').split(/[\\\/]/).slice(-2).join('/'))}</span>
         </div>
@@ -892,9 +1094,9 @@ function renderDetail(){
 
     ${treeHtml}
 
-    <div class="section-label">Actividad del agente</div>
-    <div class="timeline">${renderTimeline(run) || '<div class="tl-item tl-note"><p>Sin pasos registrados.</p></div>'}</div>
+    ${activityHtml}
 
+    ${summaryHtml}
     ${diffHtml}
     ${footerHtml}
   `;
@@ -909,14 +1111,114 @@ function renderDetail(){
   }
 }
 
+/* ================= DASHBOARD DE PERFILES ================= */
+
+const AGENT_ORDER = ["Copilot", "Codex", "AnyAPI", "Comando"];
+
+function computeProfileStats(){
+  const map = new Map();
+  for(const r of RUNS){
+    const key = r.profileName || "Sin perfil";
+    if(!map.has(key)){
+      map.set(key, {
+        name:key, runs:0, success:0, error:0, blocked:0, auth:0, unknown:0,
+        credits:0, added:0, removed:0, lastRun:null, byAgent:{},
+      });
+    }
+    const s = map.get(key);
+    s.runs++;
+    s[r.status] = (s[r.status]||0) + 1;
+    s.credits += r.credits ? r.credits.amount : 0;
+    s.added += r.changes ? r.changes.added : 0;
+    s.removed += r.changes ? r.changes.removed : 0;
+    s.byAgent[r.agentLabel] = (s.byAgent[r.agentLabel]||0) + 1;
+    if(!s.lastRun || (r.started && r.started > s.lastRun)) s.lastRun = r.started;
+  }
+  return [...map.values()].sort((a,b)=> b.runs - a.runs);
+}
+
+function renderDashboard(){
+  const el = document.getElementById('dashboardView');
+  const profiles = computeProfileStats();
+  if(profiles.length === 0){
+    el.innerHTML = '<div class="placeholder">Todavía no hay corridas registradas.</div>';
+    return;
+  }
+
+  const totalRuns = RUNS.length;
+  const totalCredits = profiles.reduce((s,p)=> s + p.credits, 0);
+  const totalAdded = profiles.reduce((s,p)=> s + p.added, 0);
+  const totalRemoved = profiles.reduce((s,p)=> s + p.removed, 0);
+  const maxCredits = Math.max(1, ...profiles.map(p=>p.credits));
+
+  const overviewHtml = `
+    <div class="dash-overview">
+      <div class="stat"><b>${profiles.length}</b><small>perfiles</small></div>
+      <div class="stat"><b>${totalRuns}</b><small>corridas totales</small></div>
+      <div class="stat"><b>${totalCredits.toFixed(1)}</b><small>créditos totales</small></div>
+      <div class="stat"><b>+${totalAdded} -${totalRemoved}</b><small>líneas totales</small></div>
+    </div>
+  `;
+
+  const cardsHtml = profiles.map(p=>{
+    const problems = (p.error||0) + (p.blocked||0) + (p.auth||0);
+    const pct = Math.max(4, Math.round((p.credits / maxCredits) * 100));
+    const agentBadges = AGENT_ORDER.filter(a => p.byAgent[a])
+      .concat(Object.keys(p.byAgent).filter(a => !AGENT_ORDER.includes(a)))
+      .map(a => `<span class="agent-badge">${escapeHtml(a)} <b>${p.byAgent[a]}</b></span>`)
+      .join("");
+    return `
+      <div class="profile-card">
+        <div class="profile-head">
+          <span class="profile-avatar">${escapeHtml(p.name.slice(0,1).toUpperCase())}</span>
+          <div>
+            <div class="profile-name">${escapeHtml(p.name)}</div>
+            <div class="profile-sub">${p.runs} corridas · última ${p.lastRun ? fmtDay(p.lastRun) : "—"}</div>
+          </div>
+        </div>
+        <div class="credit-bar"><div class="credit-bar-fill" style="width:${pct}%"></div></div>
+        <div class="profile-metrics">
+          <span class="metric"><b>${p.credits.toFixed(1)}</b> créditos</span>
+          <span class="metric"><b>+${p.added} -${p.removed}</b> líneas</span>
+          <span class="metric success"><b>${p.success||0}</b> ok</span>
+          ${problems ? `<span class="metric error"><b>${problems}</b> con problemas</span>` : ""}
+        </div>
+        <div class="agent-badges">${agentBadges}</div>
+      </div>
+    `;
+  }).join("");
+
+  el.innerHTML = `
+    ${overviewHtml}
+    <div class="profile-grid">${cardsHtml}</div>
+  `;
+}
+
+function setView(view){
+  currentView = view;
+  document.querySelectorAll('.view-btn').forEach(b=>{
+    b.classList.toggle('active', b.dataset.view === view);
+  });
+  const isList = view === 'list';
+  document.getElementById('listView').style.display = isList ? '' : 'none';
+  document.getElementById('listControls').style.display = isList ? '' : 'none';
+  document.getElementById('dashboardView').style.display = isList ? 'none' : '';
+  if(!isList) renderDashboard();
+}
+
 /* ================= WIRE UP ================= */
 
 document.getElementById('searchBox').addEventListener('input', e=>{ filterText = e.target.value; renderList(); });
 document.getElementById('statusFilter').addEventListener('change', e=>{ filterStatus = e.target.value; renderList(); });
 document.getElementById('branchFilter').addEventListener('change', e=>{ filterBranch = e.target.value; renderList(); });
+document.getElementById('profileFilter').addEventListener('change', e=>{ filterProfile = e.target.value; renderList(); });
 document.getElementById('sortOrder').addEventListener('change', e=>{ sortOrder = e.target.value; renderList(); });
+document.querySelectorAll('.view-btn').forEach(btn=>{
+  btn.addEventListener('click', ()=> setView(btn.dataset.view));
+});
 
 buildBranchOptions();
+buildProfileOptions();
 renderStats();
 renderList();
 if(RUNS.length){ activeId = filteredSorted()[0].filename; renderList(); renderDetail(); }

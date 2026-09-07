@@ -17,6 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from paths import IA_DATA_DIR
+from ai_manager import validate_autorun_command
 
 CONFIG_PATH = IA_DATA_DIR / "codex_config.json"
 
@@ -36,6 +37,10 @@ def save_config(cfg):
 
 
 def set_autorun(folder: str, enabled: bool, command: str | None = None):
+    if enabled:
+        valid, error = validate_autorun_command(command or "")
+        if not valid:
+            raise ValueError(error)
     cfg = load_config()
     key = str(Path(folder))
     entry = cfg.get(key, {})
@@ -70,7 +75,11 @@ def main():
             i = args.index("--command")
             if i + 1 < len(args):
                 cmd = args[i+1]
-        set_autorun(folder, True, cmd)
+        try:
+            set_autorun(folder, True, cmd)
+        except ValueError as exc:
+            print(f"Invalid autorun command: {exc}", file=sys.stderr)
+            sys.exit(1)
     elif disable:
         set_autorun(folder, False, None)
     else:

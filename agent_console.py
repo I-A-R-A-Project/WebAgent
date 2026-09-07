@@ -1,4 +1,4 @@
-"""Panel inferior para ejecutar agentes y mostrar su salida en vivo."""
+"""Panel inferior para ejecutar agentes o comandos y mostrar su salida en vivo."""
 
 import shlex
 import shutil
@@ -7,7 +7,13 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import QProcess, QProcessEnvironment, Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import (
+    QColor,
+    QFont,
+    QPalette,
+    QSyntaxHighlighter,
+    QTextCharFormat,
+)
 from PyQt6.QtWidgets import (
     QHBoxLayout, QLineEdit, QPlainTextEdit, QPushButton,
     QFileDialog, QMessageBox, QTabBar, QTabWidget, QVBoxLayout, QWidget,
@@ -15,9 +21,99 @@ from PyQt6.QtWidgets import (
 from paths import COPILOT_PROFILES_DIR
 from paths import IA_DATA_DIR
 
-from ai_manager import AGENT_DEFS, AgentConfigStore, build_agent_command
+from ai_manager import (
+    AGENT_DEFS,
+    AgentConfigStore,
+    build_agent_command,
+    validate_autorun_command,
+)
 from file_ops import GitVersioning
 from web_common.tabs import prepare_tab_widget
+
+
+# Paleta "terminal oscura" para los inputs y pantallas de salida de la consola.
+CONSOLE_BG = "#0b0d11"
+CONSOLE_FG = "#e6e8ee"
+CONSOLE_BORDER = "#2b2f3a"
+CONSOLE_SELECTION_BG = "#3a3320"
+CONSOLE_SELECTION_FG = "#ffffff"
+
+
+def apply_console_style(widget):
+    """Fuerza fondo negro / letra blanca en un input o pantalla de la consola."""
+    widget.setStyleSheet(
+        f"background-color: {CONSOLE_BG}; color: {CONSOLE_FG}; "
+        f"border: 1px solid {CONSOLE_BORDER}; border-radius: 4px; "
+        f"selection-background-color: {CONSOLE_SELECTION_BG}; "
+        f"selection-color: {CONSOLE_SELECTION_FG}; padding: 3px;"
+    )
+    # El estilo de arriba no siempre alcanza para el color del cursor de texto
+    # en QPlainTextEdit/QLineEdit, así que reforzamos también con la paleta.
+    palette = widget.palette()
+    palette.setColor(QPalette.ColorRole.Base, QColor(CONSOLE_BG))
+    palette.setColor(QPalette.ColorRole.Text, QColor(CONSOLE_FG))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(CONSOLE_SELECTION_BG))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(CONSOLE_SELECTION_FG))
+    widget.setPalette(palette)
+
+
+class ConsoleHighlighter(QSyntaxHighlighter):
+    """Resalta la salida de la consola: diffs de git, marcadores y errores."""
+
+    def __init__(self, document):
+        super().__init__(document)
+        self._rules = []
+
+        def add(pattern, color, bold=False, italic=False):
+            fmt = QTextCharFormat()
+            fmt.setForeground(QColor(color))
+            if bold:
+                fmt.setFontWeight(QFont.Weight.Bold)
+            if italic:
+                fmt.setFontItalic(True)
+            self._rules.append((re.compile(pattern), fmt))
+
+        # Comando ejecutado / entrada enviada al proceso.
+        add(r"^\$ .*", "#7fd1e0", bold=True)
+        add(r"^> .*", "#7fd1e0")
+
+        # Encabezados de secciones del log ("=== Copilot ===", etc.).
+        add(r"^=== .* ===\s*$", "#e2a63b", bold=True)
+
+        # Diff de git: encabezados de archivo, hunks y líneas +/-.
+        add(r"^diff --git .*", "#e6e8ee", bold=True)
+        add(r"^index [0-9a-fA-F]{4,}\.\.[0-9a-fA-F]{4,}.*", "#7d8194", italic=True)
+        add(r"^(new file|deleted file|similarity index|rename (from|to)|old mode|new mode).*", "#7d8194", italic=True)
+        add(r"^\+\+\+ .*", "#7d8194", italic=True)
+        add(r"^--- (?!.*\(código).*", "#7d8194", italic=True)
+        add(r"^@@ .*@@.*", "#e2a63b", bold=True)
+        add(r"^\+(?!\+\+).*", "#59c98a")
+        add(r"^-(?!--).*", "#e5636b")
+
+        # Contexto de git que Copilot recibe en el prompt.
+        add(r"^Contexto Git: rama=.*", "#b39bf0", bold=True)
+        add(r"^Working tree:\s*$", "#b39bf0", bold=True)
+
+        # Estadísticas finales de la corrida.
+        add(r"^Changes\s+[+\-0-9 ]+$", "#59c98a", bold=True)
+        add(r"^AI Credits.*", "#e2a63b")
+        add(r"^Tokens\s.*", "#7d8194")
+        add(r"^Resume\s+.*", "#7d8194", italic=True)
+
+        # Marcadores de fin de ejecución: verde si código 0, rojo si falló.
+        add(r"^--- .*\(código\s*0\)\s*---\s*$", "#59c98a", bold=True)
+        add(r"^--- .*\(código\s*-?[1-9][0-9]*\)\s*---\s*$", "#e5636b", bold=True)
+
+        # Errores, permisos y avisos.
+        add(r".*Permission denied.*", "#e5636b", bold=True)
+        add(r".*\bError:.*", "#e5636b", bold=True)
+        add(r"^⚠.*", "#e2a63b", bold=True)
+
+    def highlightBlock(self, text):
+        for pattern, fmt in self._rules:
+            if pattern.match(text):
+                self.setFormat(0, len(text), fmt)
+                return
 
 
 class TaskInput(QPlainTextEdit):
@@ -44,14 +140,18 @@ class AgentConsolePanel(QWidget):
         folder_getter,
         auth_url_handler=None,
         auth_success_handler=None,
+        profile_name_getter=None,
     ):
         super().__init__(parent)
         self.profile_getter = profile_getter
+        self.profile_name_getter = profile_name_getter
         self.folder_getter = folder_getter
+        self.config_store = AgentConfigStore()
         self.auth_url_handler = auth_url_handler
         self.auth_success_handler = auth_success_handler
         self.process = None
         self.current_agent_id = None
+        self.current_run_kind = None
         self.copilot_login_process = None
         self.autorun_process = None
         self._autorun_output = None
@@ -62,6 +162,7 @@ class AgentConsolePanel(QWidget):
         self._copilot_login_buffer = ""
         self._copilot_auth_urls_seen = set()
         self._auth_warning_shown = set()
+        self._highlighters = []
         self.setVisible(False)
 
         layout = QVBoxLayout(self)
@@ -69,8 +170,10 @@ class AgentConsolePanel(QWidget):
         self.task_edit = TaskInput(self.run_agent)
         self.task_edit.setFixedHeight(76)
         self.task_edit.setPlaceholderText(
-            "copilot, codex o anyapi seguido de la tarea... (Shift+Enter para ejecutar)"
+            "copilot/codex/anyapi seguido de la tarea, o un comando de terminal... "
+            "(Shift+Enter para ejecutar; «cd» abre el selector de carpeta)"
         )
+        apply_console_style(self.task_edit)
         controls.addWidget(self.task_edit, 1)
         buttons = QVBoxLayout()
         self.run_btn = QPushButton("▶ Ejecutar")
@@ -81,12 +184,14 @@ class AgentConsolePanel(QWidget):
         self.stop_btn.clicked.connect(self.stop_agent)
         buttons.addWidget(self.stop_btn)
         directory_row = QHBoxLayout()
-        self.directory_edit = QLineEdit(self.folder_getter())
+        remembered_directory = self.config_store.get_console_directory()
+        self.directory_edit = QLineEdit(
+            remembered_directory or self.folder_getter()
+        )
         self.directory_edit.setToolTip("Directorio de trabajo de la consola")
+        self.directory_edit.editingFinished.connect(self._remember_directory)
+        apply_console_style(self.directory_edit)
         directory_row.addWidget(self.directory_edit)
-        browse_btn = QPushButton("📁")
-        browse_btn.clicked.connect(self._choose_directory)
-        directory_row.addWidget(browse_btn)
         buttons.addLayout(directory_row)
         controls.addLayout(buttons)
         layout.addLayout(controls)
@@ -98,26 +203,40 @@ class AgentConsolePanel(QWidget):
         )
         layout.addWidget(self.tabs, 1)
         self.stdin_edit = QLineEdit()
-        self.stdin_edit.setPlaceholderText("Responder al agente y presionar Enter...")
+        self.stdin_edit.setPlaceholderText("Enviar entrada al proceso y presionar Enter...")
         self.stdin_edit.returnPressed.connect(self.send_stdin)
+        apply_console_style(self.stdin_edit)
         layout.addWidget(self.stdin_edit)
 
     def _working_folder(self) -> str:
         return self.directory_edit.text().strip() or self.folder_getter()
+
+    def _remember_directory(self):
+        directory = self.directory_edit.text().strip()
+        if directory:
+            self.config_store.set_console_directory(directory)
 
     def _start_log(self, agent_id: str, folder: str, command: str, task: str):
         log_dir = IA_DATA_DIR / "agent_logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._log_file = log_dir / f"{timestamp}_{agent_id}.log"
+        profile_id = self.profile_getter() or "(sin perfil)"
+        profile_name = (
+            self.profile_name_getter(profile_id)
+            if self.profile_name_getter
+            else profile_id
+        ) or profile_id
         self._git_start_head = None
         if GitVersioning.has_repo(folder):
             ok, head, _ = GitVersioning.run(folder, ["rev-parse", "HEAD"], timeout=10)
             if ok:
                 self._git_start_head = head.strip()
         self._write_log(
-            f"=== {AGENT_DEFS[agent_id]['short_label']} ===\n"
+            f"=== {AGENT_DEFS.get(agent_id, {}).get('short_label', 'Comando')} ===\n"
             f"started: {datetime.now().isoformat()}\n"
+            f"profile_id: {profile_id}\n"
+            f"profile: {profile_name}\n"
             f"cwd: {folder}\n"
             f"command: {command}\n"
             f"task:\n{task}\n\n"
@@ -190,14 +309,15 @@ class AgentConsolePanel(QWidget):
         raw_task = self.task_edit.toPlainText().strip()
         if not raw_task:
             return
+        self._remember_directory()
+        if raw_task.lower() == "cd":
+            self._choose_directory()
+            self.task_edit.clear()
+            return
         parts = raw_task.split(None, 1)
         agent_id = parts[0].lower().rstrip(":")
         if agent_id not in AGENT_DEFS:
-            self._new_tab(
-                "command",
-                f"IA no reconocida: {parts[0]}. Usá copilot, codex o anyapi.",
-                finished=True,
-            )
+            self._run_command(raw_task)
             return
         if len(parts) == 1 or not parts[1].strip():
             self._new_tab(
@@ -245,6 +365,7 @@ class AgentConsolePanel(QWidget):
             return
         self._start_log(agent_id, folder, " ".join(argv), task)
         self._new_tab(agent_id, f"$ {' '.join(argv)}\n\n")
+        self.current_run_kind = "agent"
         self.process = QProcess(self)
         self.process.setWorkingDirectory(folder)
         environment = self._environment(agent_id)
@@ -263,10 +384,55 @@ class AgentConsolePanel(QWidget):
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
 
+    def _run_command(self, command):
+        """Ejecuta un comando de terminal en el directorio seleccionado."""
+        valid, error = validate_autorun_command(command)
+        if not valid:
+            self._new_tab("command", f"Comando bloqueado: {error}", finished=True)
+            return
+        folder = self._working_folder()
+        if not Path(folder).is_dir():
+            self._new_tab("command", f"Directorio inexistente: {folder}", finished=True)
+            return
+
+        self.current_agent_id = None
+        self.current_run_kind = "command"
+        self._start_log("command", folder, command, command)
+        self._new_tab("command", f"$ {command}\n\n")
+        self.process = QProcess(self)
+        self.process.setWorkingDirectory(folder)
+        self.process.setProcessEnvironment(QProcessEnvironment.systemEnvironment())
+        self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self.process.readyReadStandardOutput.connect(self._read_output)
+        self.process.finished.connect(self._finished)
+        if shutil.which("cmd.exe"):
+            self.process.start("cmd.exe", ["/c", command])
+        else:
+            try:
+                tokens = shlex.split(command)
+            except ValueError as exc:
+                self.process = None
+                self._new_tab("command", f"Comando inválido: {exc}", finished=True)
+                return
+            if not tokens or shutil.which(tokens[0]) is None:
+                self.process = None
+                self._new_tab(
+                    "command",
+                    f"No se encontró el comando: {tokens[0] if tokens else '(vacío)'}",
+                    finished=True,
+                )
+                return
+            self.process.start(tokens[0], tokens[1:])
+        self.setVisible(True)
+        self.run_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+
     def _new_tab(self, agent_id, initial="", finished=False):
         self.current_output = QPlainTextEdit()
         self.current_output.setReadOnly(True)
         self.current_output.setFont(QFont("Consolas", 10))
+        apply_console_style(self.current_output)
+        self._highlighters.append(ConsoleHighlighter(self.current_output.document()))
         self.current_output.setPlainText(initial)
         label = AGENT_DEFS.get(agent_id, {}).get("short_label", "Comando")
         index = self.tabs.addTab(self.current_output, f"{label} · ejecución")
@@ -295,10 +461,11 @@ class AgentConsolePanel(QWidget):
         if self.process and self.current_output:
             data = bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")
             self._write_log(data)
-            if self.current_agent_id == "copilot":
+            if self.current_run_kind == "agent" and self.current_agent_id == "copilot":
                 self._copilot_output_buffer += data
                 self._open_copilot_auth_url(data)
-            self._detect_auth_error(self.current_agent_id, data)
+            if self.current_run_kind == "agent":
+                self._detect_auth_error(self.current_agent_id, data)
             self.current_output.insertPlainText(data)
             self.current_output.moveCursor(self.current_output.textCursor().MoveOperation.End)
 
@@ -308,6 +475,7 @@ class AgentConsolePanel(QWidget):
         )
         if directory:
             self.directory_edit.setText(directory)
+            self._remember_directory()
 
     def _detect_auth_error(self, agent_id, text):
         if agent_id == "anyapi" and "Falta ANYAPI_API_KEY" in text:
@@ -449,16 +617,35 @@ class AgentConsolePanel(QWidget):
             self.current_output.appendPlainText(f"\n--- terminó (código {exit_code}) ---")
         self._write_log(f"\n--- terminó (código {exit_code}) ---\n")
         self.process = None
+        run_kind = self.current_run_kind
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        if run_kind != "agent":
+            self.current_run_kind = None
+            self.current_agent_id = None
+            self._write_git_diff()
+            self._add_close_button(self.current_output)
+            return
         config = AgentConfigStore().get(self._working_folder())
         autorun = config.get("autorun", {})
         command = autorun.get("command", "") if autorun.get("enabled") else ""
         if command:
-            if not self._run_autorun(command):
+            valid, error = validate_autorun_command(command)
+            if not valid:
+                self._new_tab("command", f"Autorun bloqueado: {error}", finished=True)
+                self._write_log(f"\n--- autorun bloqueado: {error} ---\n")
+                self.current_run_kind = None
+                self.current_agent_id = None
+                self._write_git_diff()
+                self._add_close_button(self.current_output)
+            elif not self._run_autorun(command):
+                self.current_run_kind = None
+                self.current_agent_id = None
                 self._add_close_button(self.current_output)
         else:
             self._write_git_diff()
+            self.current_run_kind = None
+            self.current_agent_id = None
             self._add_close_button(self.current_output)
 
     def _run_autorun(self, command):
@@ -512,4 +699,6 @@ class AgentConsolePanel(QWidget):
         self._write_git_diff()
         self.autorun_process = None
         self._autorun_output = None
+        self.current_run_kind = None
+        self.current_agent_id = None
         self._add_close_button(output)

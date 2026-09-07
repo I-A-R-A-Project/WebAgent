@@ -338,6 +338,9 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             self._get_agent_workspace,
             auth_url_handler=self._open_copilot_auth_url,
             auth_success_handler=self._close_copilot_auth_tab,
+            profile_name_getter=lambda profile_id: (
+                self.profile_manager.get_profile(profile_id) or {}
+            ).get("name", profile_id),
         )
         main_layout.addWidget(self.agent_console, 0)
 
