@@ -3,10 +3,11 @@
 import shlex
 import shutil
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QProcess, QProcessEnvironment, Qt
+from PyQt6.QtCore import QProcess, QProcessEnvironment, QTimer, Qt
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -16,7 +17,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QHBoxLayout, QLineEdit, QPlainTextEdit, QPushButton,
-    QFileDialog, QMessageBox, QTabBar, QTabWidget, QVBoxLayout, QWidget,
+    QFileDialog, QLabel, QMessageBox, QTabBar, QTabWidget, QVBoxLayout, QWidget,
 )
 from paths import COPILOT_PROFILES_DIR
 from paths import IA_DATA_DIR
@@ -140,10 +141,15 @@ class AgentConsolePanel(QWidget):
         auth_url_handler=None,
         auth_success_handler=None,
         profile_name_getter=None,
+        profile_rotator=None,
+        profile_usage_getter=None,
     ):
         super().__init__(parent)
         self.profile_getter = profile_getter
+        self.profile_rotator = profile_rotator
+        self._profile_override = None
         self.profile_name_getter = profile_name_getter
+        self.profile_usage_getter = profile_usage_getter
         self.folder_getter = folder_getter
         self.config_store = AgentConfigStore()
         self.auth_url_handler = auth_url_handler
@@ -158,6 +164,10 @@ class AgentConsolePanel(QWidget):
         self._log_file = None
         self._git_start_head = None
         self._copilot_output_buffer = ""
+        self._copilot_quota_detected = False
+        self._copilot_retry_pending = False
+        self._copilot_original_task = ""
+        self._copilot_profiles_tried = set()
         self._copilot_login_buffer = ""
         self._copilot_auth_urls_seen = set()
         self._auth_warning_shown = set()
@@ -210,24 +220,35 @@ class AgentConsolePanel(QWidget):
     def _working_folder(self) -> str:
         return self.directory_edit.text().strip() or self.folder_getter()
 
+    def _profile_id(self):
+        return self._profile_override or self.profile_getter()
+
     def _remember_directory(self):
         directory = self.directory_edit.text().strip()
         if directory:
             self.config_store.set_console_directory(directory)
 
     def run_cli_help(self, agent_id: str):
-        """Muestra la ayuda del CLI seleccionado en una pestaña de consola."""
-        if agent_id not in ("copilot", "codex") or self.process is not None:
+        """Muestra la ayuda del agente seleccionado en una pestaña de consola."""
+        if agent_id not in ("copilot", "codex", "gemini", "groq") or self.process is not None:
             return
-        if shutil.which(agent_id) is None:
-            self._new_tab(agent_id, f"No se encontró el comando: {agent_id}", finished=True)
-            return
+        if agent_id in ("copilot", "codex"):
+            if shutil.which(agent_id) is None:
+                self._new_tab(agent_id, f"No se encontró el comando: {agent_id}", finished=True)
+                return
+            command = f"{agent_id} --help"
+            program = agent_id
+            arguments = ["--help"]
+        else:
+            script = Path(__file__).resolve().parent / "scripts" / f"{agent_id}_agent.py"
+            command = f'"{sys.executable}" "{script}" --help'
+            program = sys.executable
+            arguments = [str(script), "--help"]
         folder = self._working_folder()
         if not Path(folder).is_dir():
             self._new_tab(agent_id, f"Directorio inexistente: {folder}", finished=True)
             return
 
-        command = f"{agent_id} --help"
         self.current_agent_id = agent_id
         self.current_run_kind = "help"
         self._start_log(agent_id, folder, command, command)
@@ -242,10 +263,10 @@ class AgentConsolePanel(QWidget):
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.process.readyReadStandardOutput.connect(self._read_output)
         self.process.finished.connect(self._finished)
-        if shutil.which("cmd.exe"):
+        if agent_id in ("copilot", "codex") and shutil.which("cmd.exe"):
             self.process.start("cmd.exe", ["/c", agent_id, "--help"])
         else:
-            self.process.start(agent_id, ["--help"])
+            self.process.start(program, arguments)
         self.setVisible(True)
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -255,7 +276,7 @@ class AgentConsolePanel(QWidget):
         log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._log_file = log_dir / f"{timestamp}_{agent_id}.log"
-        profile_id = self.profile_getter() or "(sin perfil)"
+        profile_id = self._profile_id() or "(sin perfil)"
         profile_name = (
             self.profile_name_getter(profile_id)
             if self.profile_name_getter
@@ -316,7 +337,7 @@ class AgentConsolePanel(QWidget):
             stream.write(text)
 
     def _environment(self, agent_id):
-        profile_id = self.profile_getter()
+        profile_id = self._profile_id()
         if not profile_id:
             return None
         folder = self._working_folder()
@@ -355,34 +376,45 @@ class AgentConsolePanel(QWidget):
             return
         parts = raw_task.split(None, 1)
         agent_id = parts[0].lower().rstrip(":")
+        retrying_copilot = self._copilot_retry_pending
+        if retrying_copilot:
+            agent_id = "copilot"
+            task = self._copilot_original_task
+            self._copilot_retry_pending = False
+        else:
+            self._profile_override = None
+            task = parts[1].strip() if len(parts) > 1 else ""
         if agent_id not in AGENT_DEFS:
             self._run_command(raw_task)
             return
-        if len(parts) == 1 or not parts[1].strip():
+        if not task:
             self._new_tab(
                 agent_id,
                 f"Falta la tarea después de «{parts[0]}».",
                 finished=True,
             )
             return
-        task = parts[1].strip()
         self.current_agent_id = agent_id
-        if not self.profile_getter():
+        if not self._profile_id():
             self._new_tab(
                 agent_id,
                 "No hay un perfil disponible para agentes. Creá uno distinto de Default.",
                 finished=True,
             )
             return
+        if agent_id == "copilot" and self._copilot_usage_is_at_limit():
+            return
         self._auth_warning_shown.discard(agent_id)
         self._copilot_output_buffer = ""
+        if agent_id == "copilot" and not retrying_copilot:
+            self._copilot_quota_detected = False
+            self._copilot_original_task = task
+            self._copilot_profiles_tried = {self._profile_id()}
         self._copilot_auth_urls_seen.clear()
         folder = self._working_folder()
         config = AgentConfigStore().get(folder)
         command = config["agents"][agent_id].get("command", AGENT_DEFS[agent_id]["default_command"])
         prompt = task
-        if agent_id == "copilot":
-            prompt += self._git_context()
         try:
             tokens = shlex.split(command)
         except ValueError as exc:
@@ -390,6 +422,13 @@ class AgentConsolePanel(QWidget):
             return
         script_dir = str(Path(__file__).resolve().parent)
         argv = [token.replace("{prompt}", prompt).replace("{script_dir}", script_dir) for token in tokens]
+        if retrying_copilot:
+            prompt = self._copilot_fallback_prompt()
+            argv = [
+                "copilot", "-p", prompt, "--allow-all-tools",
+                "--allow-all-paths", "--allow-all-urls",
+            ]
+            self._copilot_quota_detected = False
         if not argv or shutil.which(argv[0]) is None:
             self._new_tab(
                 agent_id,
@@ -417,6 +456,24 @@ class AgentConsolePanel(QWidget):
         self.setVisible(True)
         self.run_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+
+    def _copilot_usage_is_at_limit(self):
+        """Evita iniciar Copilot con un perfil cuyo uso ya alcanzó el límite."""
+        usage = (
+            self.profile_usage_getter(self._profile_id())
+            if self.profile_usage_getter
+            else None
+        )
+        percent = usage.get("percent") if isinstance(usage, dict) else None
+        if not isinstance(percent, (int, float)) or percent < 90:
+            return False
+        QMessageBox.warning(
+            self,
+            "Uso de Copilot demasiado alto",
+            f"El perfil seleccionado ya usa {percent:g}% de Copilot. "
+            "Elegí otro perfil con menos de 90% antes de ejecutar el agente.",
+        )
+        return True
 
     def _run_command(self, command):
         """Ejecuta un comando de terminal en el directorio seleccionado."""
@@ -469,7 +526,17 @@ class AgentConsolePanel(QWidget):
         self._highlighters.append(ConsoleHighlighter(self.current_output.document()))
         self.current_output.setPlainText(initial)
         label = AGENT_DEFS.get(agent_id, {}).get("short_label", "Comando")
-        index = self.tabs.addTab(self.current_output, f"{label} · ejecución")
+        if agent_id == "copilot":
+            profile_id = self._profile_id()
+            profile_name = (
+                self.profile_name_getter(profile_id)
+                if profile_id and self.profile_name_getter
+                else profile_id
+            ) or "sin perfil"
+            label = f"{label} · {profile_name}"
+        else:
+            label = f"{label}"
+        index = self.tabs.addTab(self.current_output, label)
         self.tabs.setCurrentIndex(index)
         self._add_close_button(self.current_output, enabled=finished)
 
@@ -497,6 +564,8 @@ class AgentConsolePanel(QWidget):
             self._write_log(data)
             if self.current_run_kind == "agent" and self.current_agent_id == "copilot":
                 self._copilot_output_buffer += data
+                if self._looks_like_copilot_quota(self._copilot_output_buffer):
+                    self._copilot_quota_detected = True
                 self._open_copilot_auth_url(data)
             if self.current_run_kind == "agent":
                 self._detect_auth_error(self.current_agent_id, data)
@@ -532,7 +601,7 @@ class AgentConsolePanel(QWidget):
     def _start_copilot_login(self):
         if self.copilot_login_process is not None:
             return
-        profile_id = self.profile_getter()
+        profile_id = self._profile_id()
         if not profile_id or shutil.which("copilot") is None:
             return
         environment = self._environment("copilot")
@@ -584,7 +653,7 @@ class AgentConsolePanel(QWidget):
 
     def _copilot_login_finished(self, exit_code, _status):
         self._read_copilot_login_output()
-        profile_id = self.profile_getter()
+        profile_id = self._profile_id()
         if self.current_output:
             self.current_output.appendPlainText(
                 f"\n--- login de Copilot terminó (código {exit_code}) ---"
@@ -630,7 +699,7 @@ class AgentConsolePanel(QWidget):
             )
             self.auth_url_handler(
                 url,
-                self.profile_getter(),
+                self._profile_id(),
                 code_match.group(1) if code_match else "",
             )
 
@@ -656,6 +725,31 @@ class AgentConsolePanel(QWidget):
         run_kind = self.current_run_kind
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        if (
+            run_kind == "agent"
+            and self.current_agent_id == "copilot"
+            and exit_code == 1
+            and self._copilot_quota_detected
+            and self._rotate_copilot_profile()
+        ):
+            warning = (
+                "\n--- Cuota mensual agotada; cambiando de perfil y "
+                "relanzando el prompt ---\n"
+            )
+            if self._has_started_changes():
+                warning += (
+                    "⚠ El trabajo quedó incompleto y ya había cambios realizados. "
+                    "El nuevo agente debe revisarlos antes de continuar.\n"
+                )
+            self._write_log(warning)
+            if self.current_output:
+                self.current_output.appendPlainText(warning)
+                self._add_close_button(self.current_output)
+            self._copilot_retry_pending = True
+            self.current_run_kind = None
+            self.current_agent_id = None
+            QTimer.singleShot(250, self.run_agent)
+            return
         if run_kind not in ("agent", "help"):
             self.current_run_kind = None
             self.current_agent_id = None
@@ -684,10 +778,50 @@ class AgentConsolePanel(QWidget):
             self.current_agent_id = None
             self._add_close_button(self.current_output)
 
+    def _has_started_changes(self):
+        folder = self._working_folder()
+        if not GitVersioning.has_repo(folder):
+            return False
+        status = GitVersioning.run(folder, ["status", "--short"], timeout=10)
+        if status[1].strip():
+            return True
+        if self._git_start_head:
+            ok, head, _ = GitVersioning.run(folder, ["rev-parse", "HEAD"], timeout=10)
+            return ok and head.strip() != self._git_start_head.strip()
+        return False
+
+    def _looks_like_copilot_quota(self, text):
+        return bool(re.search(
+            r"(?im)^\s*you have exceeded your monthly quota\s*\(request id:",
+            text,
+        ))
+
+    def _rotate_copilot_profile(self):
+        current = self._profile_id()
+        if not current or not self.profile_rotator:
+            return False
+        self._copilot_profiles_tried.add(current)
+        next_profile = self.profile_rotator(current)
+        if not next_profile or next_profile in self._copilot_profiles_tried:
+            return False
+        self._copilot_profiles_tried.add(next_profile)
+        self._profile_override = next_profile
+        self._write_log(
+            f"\n--- Perfil de Copilot seleccionado: {next_profile} ---\n"
+        )
+        return True
+
+    def _copilot_fallback_prompt(self):
+        return (
+            f"{self._copilot_original_task}\n\n"
+            "El perfil anterior agotó su cuota. Continuá el trabajo pendiente, "
+            "revisá los cambios existentes y no los pierdas."
+        )
+
     def _run_autorun(self, command):
         if self.autorun_process is not None:
             return False
-        if not self.profile_getter():
+        if not self._profile_id():
             return False
         output = self.current_output
         self._autorun_output = output

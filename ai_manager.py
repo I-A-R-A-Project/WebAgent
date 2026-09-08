@@ -286,6 +286,7 @@ class AIAgentsDialog(QDialog):
         self.auth_urls_seen = set()
         self.copilot_output_buffer = ""
         self.copilot_auth_code = ""
+        self.copilot_quota_detected = False
 
         self.setWindowTitle(f"Agentes IA — {Path(folder).name}")
         self.resize(680, 640)
@@ -309,6 +310,7 @@ class AIAgentsDialog(QDialog):
         delete_btn.clicked.connect(lambda: self.delete_profile_handler and self.delete_profile_handler(self.profile_combo.currentData()))
         profile_row.addWidget(delete_btn)
         layout.addLayout(profile_row)
+        self._update_copilot_usage_display()
         folder_row = QHBoxLayout()
         folder_row.addWidget(QLabel(f"Archivos: {folder}"), 1)
         folder_btn = QPushButton("Cambiar carpeta...")
@@ -336,6 +338,7 @@ class AIAgentsDialog(QDialog):
             tab = QWidget()
             self._build_agent_tab(tab, agent_id)
             self.agents_tabs.addTab(tab, AGENT_DEFS[agent_id]["short_label"])
+        self._update_copilot_usage_display()
         layout.addWidget(self.agents_tabs, 1)
  
         close_btn = QPushButton("Cerrar")
@@ -399,8 +402,17 @@ class AIAgentsDialog(QDialog):
             return
         self.profile_id = selected
         self.copilot_home = COPILOT_PROFILES_DIR / selected
+        self._update_copilot_usage_display()
         if self.profile_changed_handler:
             self.profile_changed_handler(selected)
+
+    def _update_copilot_usage_display(self):
+        profile_manager = getattr(self.parent(), "profile_manager", None)
+        profile = profile_manager.get_profile(self.profile_id) if profile_manager and self.profile_id else None
+        usage = (profile or {}).get("copilot_usage", {}).get("text")
+        usage_label = self.agent_widgets.get("copilot", {}).get("usage_label")
+        if usage_label is not None:
+            usage_label.setText(f"Uso: {usage or 'No disponible'}")
 
     # ---------- Sección: estado del repo / remoto ----------
 
@@ -543,6 +555,9 @@ class AIAgentsDialog(QDialog):
         defn = AGENT_DEFS[agent_id]
         tab_layout = QVBoxLayout(tab)
 
+        usage_label = QLabel("Uso: No disponible")
+        tab_layout.addWidget(usage_label)
+
         desc = QLabel(defn["description"])
         desc.setWordWrap(True)
         desc.setStyleSheet("color: gray; font-size: 11px;")
@@ -569,7 +584,7 @@ class AIAgentsDialog(QDialog):
         tab_layout.addLayout(form)
 
         btn_row = QHBoxLayout()
-        if agent_id in ("copilot", "codex"):
+        if agent_id in ("copilot", "codex", "gemini", "groq"):
             help_btn = QPushButton("❔ Ver ayuda en la consola")
             help_btn.clicked.connect(lambda: self._show_cli_help(agent_id))
             btn_row.addWidget(help_btn)
@@ -596,6 +611,7 @@ class AIAgentsDialog(QDialog):
 
         self.agent_widgets[agent_id] = {
             "command_edit": command_edit,
+            "usage_label": usage_label,
         }
         if agent_id in ("copilot", "gemini", "groq"):
             self.agent_widgets[agent_id]["token_edit"] = token_edit
@@ -910,14 +926,19 @@ class AIAgentsDialog(QDialog):
                     if self.auth_success_handler:
                         self.auth_success_handler(self.profile_id)
                 self._open_copilot_auth_url(data)
-                if self._looks_like_copilot_limit(data):
-                    self._rotate_copilot_profile()
+                if self._looks_like_copilot_limit(self.copilot_output_buffer):
+                    self.copilot_quota_detected = True
             self.log_view.moveCursor(self.log_view.textCursor().MoveOperation.End)
             self.log_view.insertPlainText(data)
 
     def _on_process_finished(self, exit_code: int, exit_status):
         retry_copilot = self.pending_copilot_retry
         start_login = self.pending_copilot_login
+        quota_copilot = (
+            self.active_agent == "copilot"
+            and exit_code == 1
+            and self.copilot_quota_detected
+        )
         agent_label = AGENT_DEFS[self.active_agent]["short_label"] if self.active_agent else "?"
         self._append_log(f"\n--- {agent_label} terminó (código {exit_code}) ---\n")
 
@@ -933,6 +954,7 @@ class AIAgentsDialog(QDialog):
         self.copilot_rotation_in_progress = False
         self.pending_copilot_retry = False
         self.pending_copilot_login = False
+        self.copilot_quota_detected = False
         self._refresh_repo_status()
 
         # Autorun (opcional): ejecutar comando local configurado por carpeta
@@ -978,17 +1000,21 @@ class AIAgentsDialog(QDialog):
                 self.preview_mode = False
                 self.preview_branch = None
 
+        if quota_copilot and self._rotate_copilot_profile():
+            self._append_log(
+                "\n⚠ Copilot agotó la cuota mensual y terminó con código 1. "
+                "El trabajo puede haber quedado incompleto; revisá los cambios "
+                "existentes al reintentar con el nuevo perfil.\n"
+            )
         if start_login:
             QTimer.singleShot(250, self._start_copilot_login)
         elif retry_copilot:
             QTimer.singleShot(250, lambda: self._run_agent("copilot"))
 
     def _looks_like_copilot_limit(self, text):
-        lowered = text.lower()
-        return any(pattern in lowered for pattern in (
-            "rate limit", "limit reached", "usage limit", "quota exhausted",
-            "exhausted", "too many requests", "no premium requests",
-            "maximum number of requests",
+        return bool(re.search(
+            r"(?im)^\s*you have exceeded your monthly quota\s*\(request id:",
+            text,
         ))
 
     def _rotate_copilot_profile(self):

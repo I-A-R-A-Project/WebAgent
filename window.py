@@ -1,6 +1,7 @@
 import sys
 import os
 import shutil
+import json
 from urllib.parse import parse_qs
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -16,8 +17,8 @@ from PyQt6.QtWidgets import (
     QMessageBox, QLabel, QFileDialog, QComboBox, QTreeWidget
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWebEngineCore import QWebEngineProfile, QWebEngineDownloadRequest
-from PyQt6.QtCore import Qt, QUrl, QMimeData, QEvent
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineDownloadRequest
+from PyQt6.QtCore import Qt, QUrl, QMimeData, QEvent, QTimer
 from PyQt6.QtGui import QAction, QKeySequence, QKeyEvent, QShortcut
 
 from file_ops import GitVersioning
@@ -106,6 +107,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
 
         if not self._restore_session_or_default():
             self._activate_profile(self.current_profile_id, open_home=True)
+        QTimer.singleShot(0, self._check_copilot_usage_for_all_profiles)
 
     # ------------------------------------------------------------------
     # Barra de estado
@@ -341,6 +343,10 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             profile_name_getter=lambda profile_id: (
                 self.profile_manager.get_profile(profile_id) or {}
             ).get("name", profile_id),
+            profile_rotator=self._rotate_agent_profile,
+            profile_usage_getter=lambda profile_id: (
+                self.profile_manager.get_profile(profile_id) or {}
+            ).get("copilot_usage"),
         )
         main_layout.addWidget(self.agent_console, 0)
 
@@ -366,6 +372,95 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         if (project_root / "WebAgent").is_dir() and (project_root / "web_common").is_dir():
             return str(project_root)
         return str(app_dir)
+
+    def _check_copilot_usage_for_all_profiles(self):
+        """Consulta el crédito de Copilot usando las cookies de cada perfil."""
+        self._copilot_usage_pages = {}
+        self._copilot_usage_pending = set(self.profile_manager.profile_ids())
+        for profile_id in self._copilot_usage_pending.copy():
+            page = QWebEnginePage(self._get_qt_profile(profile_id), self)
+            self._copilot_usage_pages[profile_id] = page
+            page.loadFinished.connect(
+                lambda ok, pid=profile_id, checked_page=page:
+                    self._read_copilot_usage(pid, checked_page, ok)
+            )
+            page.load(QUrl("https://github.com/settings/copilot/features"))
+            QTimer.singleShot(
+                30000,
+                lambda pid=profile_id, checked_page=page:
+                    self._finish_copilot_usage_check(pid, checked_page, None),
+            )
+
+    def _read_copilot_usage(self, profile_id, page, ok, attempts=0):
+        if not ok:
+            self._finish_copilot_usage_check(profile_id, page, None)
+            return
+        page.runJavaScript(
+            """
+            (() => {
+              const label = [...document.querySelectorAll('*')].find(
+                element => element.textContent.trim() === 'Included credits'
+              );
+              if (!label) return null;
+              const container = label.parentElement?.parentElement || label.parentElement;
+              const text = container?.innerText || '';
+              const match = text.match(/(\\d+(?:\\.\\d+)?)\\s*%\\s*used/i);
+              return match ? {text: match[0], percent: Number(match[1])} : null;
+            })()
+            """,
+            lambda result, pid=profile_id, checked_page=page, try_count=attempts:
+                self._retry_or_finish_copilot_usage(
+                    pid, checked_page, result, try_count
+                ),
+        )
+
+    def _retry_or_finish_copilot_usage(self, profile_id, page, result, attempts):
+        if result is None and attempts < 10:
+            QTimer.singleShot(
+                1000,
+                lambda: self._read_copilot_usage(
+                    profile_id, page, True, attempts + 1
+                ),
+            )
+            return
+        self._finish_copilot_usage_check(profile_id, page, result)
+
+    def _finish_copilot_usage_check(self, profile_id, page, result):
+        if profile_id not in getattr(self, "_copilot_usage_pending", set()):
+            return
+        self._copilot_usage_pending.remove(profile_id)
+        if isinstance(result, dict) and isinstance(result.get("percent"), (int, float)):
+            usage = {
+                "percent": result["percent"],
+                "text": result.get("text", ""),
+                "checked_at": datetime.now().isoformat(),
+            }
+        else:
+            # Una consulta fallida no debe borrar el último valor conocido:
+            # queda disponible mientras se vuelve a cargar la página.
+            usage = (
+                self.profile_manager.get_profile(profile_id) or {}
+            ).get("copilot_usage")
+            if not usage:
+                usage = {
+                    "percent": None,
+                    "text": "No disponible",
+                    "checked_at": datetime.now().isoformat(),
+                }
+        self.profile_manager.update_profile(profile_id, copilot_usage=usage)
+        self._load_profiles_list()
+        for dialog in self._agent_dialogs:
+            if hasattr(dialog, "_update_copilot_usage_display"):
+                dialog._update_copilot_usage_display()
+        page.deleteLater()
+        self._copilot_usage_pages.pop(profile_id, None)
+
+    def _rotate_agent_profile(self, current_profile_id: str) -> str | None:
+        profile_ids = self.profile_manager.agent_profile_ids()
+        if len(profile_ids) < 2 or current_profile_id not in profile_ids:
+            return None
+        index = profile_ids.index(current_profile_id)
+        return profile_ids[(index + 1) % len(profile_ids)]
 
     def _on_sidebar_app_clicked(self, app):
         app_id = app["id"]
@@ -961,6 +1056,8 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
 
     def closeEvent(self, event):
         self._save_session()
+        # El último uso válido ya está en profiles.json; guardarlo de nuevo
+        # aquí asegura que quede persistido antes de cerrar el proceso.
         self.profile_manager.save_profiles()
         self.collection_manager.save_collections()
         event.accept()
