@@ -24,7 +24,6 @@ from paths import IA_DATA_DIR
 from ai_manager import (
     AGENT_DEFS,
     AgentConfigStore,
-    build_agent_command,
     validate_autorun_command,
 )
 from file_ops import GitVersioning
@@ -170,7 +169,7 @@ class AgentConsolePanel(QWidget):
         self.task_edit = TaskInput(self.run_agent)
         self.task_edit.setFixedHeight(76)
         self.task_edit.setPlaceholderText(
-            "copilot/codex/anyapi seguido de la tarea, o un comando de terminal... "
+            "copilot/codex/gemini/groq seguido de la tarea, o un comando de terminal... "
             "(Shift+Enter para ejecutar; «cd» abre el selector de carpeta)"
         )
         apply_console_style(self.task_edit)
@@ -215,6 +214,41 @@ class AgentConsolePanel(QWidget):
         directory = self.directory_edit.text().strip()
         if directory:
             self.config_store.set_console_directory(directory)
+
+    def run_cli_help(self, agent_id: str):
+        """Muestra la ayuda del CLI seleccionado en una pestaña de consola."""
+        if agent_id not in ("copilot", "codex") or self.process is not None:
+            return
+        if shutil.which(agent_id) is None:
+            self._new_tab(agent_id, f"No se encontró el comando: {agent_id}", finished=True)
+            return
+        folder = self._working_folder()
+        if not Path(folder).is_dir():
+            self._new_tab(agent_id, f"Directorio inexistente: {folder}", finished=True)
+            return
+
+        command = f"{agent_id} --help"
+        self.current_agent_id = agent_id
+        self.current_run_kind = "help"
+        self._start_log(agent_id, folder, command, command)
+        self._new_tab(agent_id, f"$ {command}\n\n")
+        self.process = QProcess(self)
+        self.process.setWorkingDirectory(folder)
+        environment = self._environment(agent_id)
+        if environment is None:
+            self.process = None
+            return
+        self.process.setProcessEnvironment(environment)
+        self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self.process.readyReadStandardOutput.connect(self._read_output)
+        self.process.finished.connect(self._finished)
+        if shutil.which("cmd.exe"):
+            self.process.start("cmd.exe", ["/c", agent_id, "--help"])
+        else:
+            self.process.start(agent_id, ["--help"])
+        self.setVisible(True)
+        self.run_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
 
     def _start_log(self, agent_id: str, folder: str, command: str, task: str):
         log_dir = IA_DATA_DIR / "agent_logs"
@@ -291,7 +325,10 @@ class AgentConsolePanel(QWidget):
             return
         config = AgentConfigStore().get(folder)
         environment = QProcessEnvironment.systemEnvironment()
-        for name in ("COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "ANYAPI_API_KEY"):
+        for name in (
+            "COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
+            "GEMINI_API_KEY", "GROQ_API_KEY",
+        ):
             environment.remove(name)
         environment.insert("COPILOT_ALLOW_ALL", "1")
         environment.insert("COPILOT_HOME", str(COPILOT_PROFILES_DIR / profile_id))
@@ -299,8 +336,10 @@ class AgentConsolePanel(QWidget):
         token = config["agents"].get(agent_id, {}).get("auth_token", "")
         if agent_id == "copilot" and token:
             environment.insert("COPILOT_GITHUB_TOKEN", token)
-        if agent_id == "anyapi" and token:
-            environment.insert("ANYAPI_API_KEY", token)
+        if agent_id == "gemini" and token:
+            environment.insert("GEMINI_API_KEY", token)
+        if agent_id == "groq" and token:
+            environment.insert("GROQ_API_KEY", token)
         return environment
 
     def run_agent(self):
@@ -341,11 +380,6 @@ class AgentConsolePanel(QWidget):
         folder = self._working_folder()
         config = AgentConfigStore().get(folder)
         command = config["agents"][agent_id].get("command", AGENT_DEFS[agent_id]["default_command"])
-        command = build_agent_command(
-            command,
-            agent_id,
-            config["agents"][agent_id].get("options", {}),
-        )
         prompt = task
         if agent_id == "copilot":
             prompt += self._git_context()
@@ -478,8 +512,10 @@ class AgentConsolePanel(QWidget):
             self._remember_directory()
 
     def _detect_auth_error(self, agent_id, text):
-        if agent_id == "anyapi" and "Falta ANYAPI_API_KEY" in text:
-            message = "AnyAPI no está autenticado. Configurá la API key en Configuración → Agentes IA."
+        if agent_id == "gemini" and "Falta GEMINI_API_KEY" in text:
+            message = "Gemini no está autenticado. Configurá la API key en Configuración → Agentes IA."
+        elif agent_id == "groq" and "Falta GROQ_API_KEY" in text:
+            message = "Groq no está autenticado. Configurá la API key en Configuración → Agentes IA."
         elif agent_id == "copilot" and "To authenticate, you can use" in text:
             if agent_id not in self._auth_warning_shown:
                 self._auth_warning_shown.add(agent_id)
@@ -620,7 +656,7 @@ class AgentConsolePanel(QWidget):
         run_kind = self.current_run_kind
         self.run_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-        if run_kind != "agent":
+        if run_kind not in ("agent", "help"):
             self.current_run_kind = None
             self.current_agent_id = None
             self._write_git_diff()

@@ -8,9 +8,9 @@ WebAgent is a desktop web browser built with PyQt6 that manages isolated browser
 - **main.py**: QMainWindow with tabbed interface, profile/collection management, menu system
 - **Profiles**: Isolated browser instances with separate storage, cache, home URLs, and zoom levels
 - **Collections**: Bookmarks/URLs with optional download folders and Git integration
-- **Agents**: Copilot CLI, Codex, and AnyAPI integration via `ai_manager.py`
+- **Agents**: Copilot CLI, Codex, Gemini, and Groq integration via `ai_manager.py`
 - **Task inbox**: `new_tab_page.py` and `task_manager.py` provide the local
-  task list; AnyAPI classifies tasks and Copilot remains the explicit executor.
+  task list; Gemini classifies tasks and Copilot remains the explicit executor.
 - **Git Versioning**: Downloads can be version-controlled instead of numbered duplicates
 - **web_common** (sibling directory): Shared UI components (tabs, navbars, sidebars, web profiles)
 
@@ -126,8 +126,9 @@ Collections link multiple profiles to a single workspace with optional Git versi
 **External tools** (optional, checked at runtime):
 - `git`: For versioning downloads and agent operations
 - `codex`, `copilot`: CLI tools for agent integration
-- AnyAPI: unified REST API provider, configured with an `ANYAPI_API_KEY`
-  through the AI Manager UI
+- Gemini: Google AI Studio API, configured with a `GEMINI_API_KEY` through the
+  AI Manager UI
+- Groq: Groq API, configured with a `GROQ_API_KEY` through the AI Manager UI
 - `ast-grep` or `sg`: optional AST-based search and rewriting
 - `uv`: optional, only needed to run the ast-grep MCP server
 
@@ -176,9 +177,10 @@ Referencias:
 - https://github.com/ast-grep/ast-grep-mcp
 - https://ast-grep.github.io/advanced/prompting
 
-AnyAPI documentation:
+Provider documentation:
 
-- https://docs.anyapi.ai/
+- https://aistudio.google.com/u/3/docs
+- https://console.groq.com/docs/overview
 
 ## Important Warnings
 

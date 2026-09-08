@@ -56,43 +56,6 @@ def validate_autorun_command(command: str) -> tuple[bool, str]:
 # Definición de los agentes: comando por defecto, prompt, requisitos
 # ======================================================================
 
-CODEX_PROMPT_TEMPLATE = """Estás parado en un repositorio git, en la rama '{target_branch}'.
-
-La rama '{source_branch}' tiene commits automáticos generados por una herramienta \
-de descargas de archivos. Esos commits muchas veces son ruidosos: agregan y \
-eliminan (o modifican) el mismo archivo varias veces seguidas, dejando un \
-historial con clutter innecesario.
-
-Tu tarea:
-1. Analizá el historial y los diffs de '{source_branch}' desde el punto en el \
-que diverge de '{target_branch}' (podés usar `git log`, `git diff` y \
-`git merge-base` para ubicarlo).
-2. Agrupá los cambios de forma LÓGICA (por archivo o por tema), IGNORANDO idas \
-y vueltas intermedias: si un archivo se agregó y después se modificó o se \
-borró varias veces antes de asentarse, no hace falta un commit por cada paso \
-intermedio — solo el resultado final tiene que quedar reflejado.
-3. Creá commits prolijos en la rama '{target_branch}' con mensajes \
-DESCRIPTIVOS: una primera línea corta en modo imperativo como resumen, y un \
-cuerpo debajo explicando qué cambió y por qué, cuando sea relevante.
-4. NO repitas el mismo mensaje de commit para cambios distintos.
-5. Al terminar, la rama '{target_branch}' tiene que estar actualizada y con el \
-working tree limpio.
-
-No toques la rama '{source_branch}' — dejala tal cual, es el registro crudo de \
-descargas. No modifiques código más allá de lo que ya está en los commits que \
-estás reorganizando (tu trabajo es de historial/commits, no de reescribir \
-funcionalidad)."""
-
-COPILOT_PROMPT_TEMPLATE = """Estás en un repositorio git, en la rama '{target_branch}'.
-
-Tu tarea principal es asistir como agente AI principal del proyecto. Este bloque
-es la plantilla oficial de instrucciones para Copilot y se usa SOLO en
-`.github/copilot-instructions.md` cuando el usuario la agrega desde la UI.
-"""
-
-COPILOT_DEFAULT_PROMPT = """Actuá como el agente Copilot del repositorio. Lee el código y responde según la tarea indicada. Si se solicitan cambios, proponé commits atómicos y comandos de verificación. Mantén mensajes breves."""
-
-
 AGENT_DEFS = {
     "codex": {
         "label": "🧹 Codex — Limpieza de commits",
@@ -101,7 +64,7 @@ AGENT_DEFS = {
         "default_command": 'codex exec --sandbox workspace-write "{prompt}"',
         "needs_task": False,
         "needs_source_branch": True,
-        "prompt_template": CODEX_PROMPT_TEMPLATE,
+        "prompt_template": "",
         "check_binary": "codex",
         "install_hint": "npm install -g @openai/codex   y luego  codex login",
     },
@@ -115,100 +78,36 @@ AGENT_DEFS = {
         ),
         "needs_task": False,
         "needs_source_branch": True,
-        "prompt_template": COPILOT_DEFAULT_PROMPT,
+        "prompt_template": "",
         "check_binary": "copilot",
         "install_hint": "requiere GitHub Copilot CLI (docs.github.com/copilot) y un plan de Copilot activo",
     },
-    "anyapi": {
-        "label": "🌐 AnyAPI — Modelos unificados",
-        "short_label": "AnyAPI",
-        "description": "Consulta modelos de OpenAI, Anthropic, Google, Meta y otros mediante una API unificada.",
-        "default_command": 'python "{script_dir}/scripts/anyapi_agent.py" --prompt "{prompt}"',
+    "gemini": {
+        "label": "✨ Gemini — Google AI Studio",
+        "short_label": "Gemini",
+        "description": "Consulta los modelos Gemini directamente mediante la API de Google AI Studio.",
+        "default_command": 'python "{script_dir}/scripts/gemini_agent.py" --prompt "{prompt}"',
         "needs_task": False,
         "needs_source_branch": False,
         "prompt_template": "",
         "check_binary": "python",
-        "install_hint": "requiere Python y una API key de AnyAPI (https://docs.anyapi.ai/)",
+        "install_hint": "requiere Python y una API key de Google AI Studio (https://aistudio.google.com/u/3/docs)",
+    },
+    "groq": {
+        "label": "⚡ Groq — Inferencia rápida",
+        "short_label": "Groq",
+        "description": "Consulta modelos open source mediante la API compatible con OpenAI de Groq.",
+        "default_command": 'python "{script_dir}/scripts/groq_agent.py" --prompt "{prompt}"',
+        "needs_task": False,
+        "needs_source_branch": False,
+        "prompt_template": "",
+        "check_binary": "python",
+        "install_hint": "requiere Python y una API key de Groq (https://console.groq.com/docs/overview)",
     },
 
 }
 
-AGENT_ORDER = ["copilot", "codex", "anyapi"]
-
-# Opciones seleccionadas de los help de cada CLI. Se dejan vacías por
-# defecto para conservar exactamente el comportamiento anterior.
-AGENT_OPTION_DEFS = {
-    "copilot": (
-        ("model", "Modelo", ("auto",)),
-        ("reasoning_effort", "Esfuerzo de razonamiento", ("", "none", "minimal", "low", "medium", "high", "xhigh", "max")),
-        ("context", "Contexto", ("", "default", "long_context")),
-        ("mode", "Modo", ("", "interactive", "plan", "autopilot")),
-        ("autopilot", "Autopilot", (False, True)),
-        ("no_ask_user", "No preguntar al usuario", (False, True)),
-        ("max_autopilot_continues", "Máx. continuaciones autopilot", ("",)),
-    ),
-    "codex": (
-        ("model", "Modelo", ("",)),
-        ("sandbox", "Sandbox", ("", "read-only", "workspace-write", "danger-full-access")),
-        ("approval", "Aprobación", ("", "on-request", "never")),
-        ("search", "Búsqueda web", (False, True)),
-        ("profile", "Perfil Codex", ("",)),
-        ("add_dir", "Directorios extra", ("",)),
-    ),
-}
-
-
-def build_agent_command(command_template: str, agent_id: str, options: dict | None = None) -> str:
-    """Agrega opciones configuradas sin duplicarlas si ya están en el comando."""
-    options = options or {}
-    tokens = shlex.split(command_template)
-    additions = []
-
-    def add_flag(flag, value=None):
-        if flag not in tokens:
-            additions.append(flag)
-            if value:
-                additions.append(value)
-
-    if agent_id == "copilot":
-        if options.get("model"):
-            add_flag("--model", options["model"])
-        if options.get("reasoning_effort"):
-            add_flag("--reasoning-effort", options["reasoning_effort"])
-        if options.get("context"):
-            add_flag("--context", options["context"])
-        if options.get("mode"):
-            add_flag("--mode", options["mode"])
-        if options.get("autopilot"):
-            add_flag("--autopilot")
-        if options.get("no_ask_user"):
-            add_flag("--no-ask-user")
-        if options.get("max_autopilot_continues"):
-            add_flag("--max-autopilot-continues", options["max_autopilot_continues"])
-    elif agent_id == "codex":
-        if options.get("model"):
-            add_flag("--model", options["model"])
-        if options.get("sandbox"):
-            add_flag("--sandbox", options["sandbox"])
-        if options.get("approval"):
-            add_flag("--ask-for-approval", options["approval"])
-        if options.get("search"):
-            add_flag("--search")
-        if options.get("profile"):
-            add_flag("--profile", options["profile"])
-        for directory in str(options.get("add_dir", "")).split(";"):
-            directory = directory.strip()
-            if directory:
-                additions.extend(["--add-dir", directory])
-
-    if not additions:
-        return command_template
-    prompt_index = next((i for i, token in enumerate(tokens) if "{prompt}" in token), len(tokens))
-    if prompt_index and tokens[prompt_index - 1] in ("-p", "--prompt"):
-        prompt_index -= 1
-    tokens[prompt_index:prompt_index] = additions
-    return shlex.join(tokens)
-
+AGENT_ORDER = ["copilot", "codex", "gemini", "groq"]
 
 # Comandos por defecto de versiones anteriores que ya no aplican (se
 # migran solos al default actual si el usuario nunca los tocó a mano).
@@ -284,6 +183,7 @@ class AgentConfigStore:
             if legacy_cmd:
                 entry["agents"]["codex"]["command"] = legacy_cmd
         else:
+            entry["agents"].pop("anyapi", None)
             for aid, defn in AGENT_DEFS.items():
                 entry["agents"].setdefault(
                     aid, {"command": defn["default_command"], "last_task": "", "options": {}}
@@ -449,7 +349,10 @@ class AIAgentsDialog(QDialog):
             return None
         self.copilot_home.mkdir(parents=True, exist_ok=True)
         environment = QProcessEnvironment.systemEnvironment()
-        for name in ("COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "ANYAPI_API_KEY"):
+        for name in (
+            "COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
+            "GEMINI_API_KEY", "GROQ_API_KEY",
+        ):
             environment.remove(name)
         environment.insert("COPILOT_ALLOW_ALL", "1")
         environment.insert("COPILOT_HOME", str(self.copilot_home))
@@ -459,8 +362,10 @@ class AIAgentsDialog(QDialog):
         if token:
             if agent_id == "copilot":
                 environment.insert("COPILOT_GITHUB_TOKEN", token)
-            elif agent_id == "anyapi":
-                environment.insert("ANYAPI_API_KEY", token)
+            elif agent_id == "gemini":
+                environment.insert("GEMINI_API_KEY", token)
+            elif agent_id == "groq":
+                environment.insert("GROQ_API_KEY", token)
         return environment
 
     def _open_copilot_auth_url(self, text):
@@ -626,26 +531,12 @@ class AIAgentsDialog(QDialog):
 
     # ---------- Sección: un agente ----------
 
-    def _read_agent_options(self, agent_id: str) -> dict:
-        options = {}
-        for key, widget in self.agent_widgets.get(agent_id, {}).get("option_widgets", {}).items():
-            if isinstance(widget, QCheckBox):
-                value = widget.isChecked()
-            elif isinstance(widget, QComboBox):
-                value = widget.currentData() or ""
-            else:
-                value = widget.text().strip()
-            if value not in ("", False):
-                options[key] = value
-        return options
-
     def _save_agent_config(self, agent_id: str):
         widgets = self.agent_widgets[agent_id]
         self.config_store.set_agent_field(
             self.folder,
             agent_id,
             command=widgets["command_edit"].text().strip() or AGENT_DEFS[agent_id]["default_command"],
-            options=self._read_agent_options(agent_id),
         )
 
     def _build_agent_tab(self, tab: QWidget, agent_id: str):
@@ -668,31 +559,8 @@ class AIAgentsDialog(QDialog):
 
         form = QFormLayout()
         command_edit = QLineEdit(agent_cfg.get("command", defn["default_command"]))
+        command_edit.setPlaceholderText("Editá la línea completa; usá {prompt} donde deba ir la tarea.")
         form.addRow("Comando:", command_edit)
-        option_widgets = {}
-        saved_options = agent_cfg.get("options", {})
-        if agent_id in AGENT_OPTION_DEFS:
-            options_box = QGroupBox("Opciones CLI")
-            options_form = QFormLayout(options_box)
-            for key, label, values in AGENT_OPTION_DEFS[agent_id]:
-                if values and all(isinstance(value, bool) for value in values):
-                    widget = QCheckBox()
-                    widget.setChecked(bool(saved_options.get(key, False)))
-                elif len(values) > 1:
-                    widget = QComboBox()
-                    widget.addItem("(predeterminado)", "")
-                    for value in values:
-                        if value:
-                            widget.addItem(value, value)
-                    index = widget.findData(saved_options.get(key, ""))
-                    widget.setCurrentIndex(max(0, index))
-                else:
-                    widget = QLineEdit(str(saved_options.get(key, "")))
-                    if key == "add_dir":
-                        widget.setPlaceholderText("Separá directorios con ;")
-                option_widgets[key] = widget
-                options_form.addRow(label + ":", widget)
-            tab_layout.addWidget(options_box)
         save_command_btn = QPushButton("Guardar comando")
         save_command_btn.clicked.connect(
             lambda: self._save_agent_config(agent_id)
@@ -701,12 +569,16 @@ class AIAgentsDialog(QDialog):
         tab_layout.addLayout(form)
 
         btn_row = QHBoxLayout()
+        if agent_id in ("copilot", "codex"):
+            help_btn = QPushButton("❔ Ver ayuda en la consola")
+            help_btn.clicked.connect(lambda: self._show_cli_help(agent_id))
+            btn_row.addWidget(help_btn)
 
-        if agent_id in ("copilot", "anyapi"):
+        if agent_id in ("copilot", "gemini", "groq"):
             token_edit = QLineEdit(agent_cfg.get("auth_token", ""))
             token_edit.setEchoMode(QLineEdit.EchoMode.Password)
             token_row = QHBoxLayout()
-            token_row.addWidget(QLabel("API key:" if agent_id == "anyapi" else "PAT:"))
+            token_row.addWidget(QLabel("API key:" if agent_id != "copilot" else "PAT:"))
             token_row.addWidget(token_edit, 1)
             tab_layout.addLayout(token_row)
             # Keep only the button to append the long template to copilot-instructions.md and login controls
@@ -724,13 +596,22 @@ class AIAgentsDialog(QDialog):
 
         self.agent_widgets[agent_id] = {
             "command_edit": command_edit,
-            "option_widgets": option_widgets,
         }
-        if agent_id in ("copilot", "anyapi"):
+        if agent_id in ("copilot", "gemini", "groq"):
             self.agent_widgets[agent_id]["token_edit"] = token_edit
 
         if agent_id == "copilot":
             self.agent_widgets[agent_id]["add_template_btn"] = add_template_btn
+
+    def _show_cli_help(self, agent_id: str):
+        """Ejecuta el help del CLI en la consola inferior de la ventana."""
+        console = getattr(self.parent(), "agent_console", None)
+        if console is None:
+            QMessageBox.warning(self, "Consola no disponible", "No se encontró la consola de agentes.")
+            return
+        console.run_cli_help(agent_id)
+        console.setVisible(True)
+        console.raise_()
 
     def _regenerate_prompt(self, agent_id: str):
         """Regenerate the prompt from template for agents that use templates.
@@ -817,10 +698,8 @@ class AIAgentsDialog(QDialog):
         self.config_store.set_branches(self.folder, source, target)
 
         widgets = self.agent_widgets[agent_id]
-        options = self._read_agent_options(agent_id)
         extra = {
             "command": widgets["command_edit"].text().strip() or defn["default_command"],
-            "options": options,
         }
         # track preview button for UI state
         widgets["preview_btn"] = widgets.get("preview_btn") or None
@@ -859,7 +738,6 @@ class AIAgentsDialog(QDialog):
 
         prompt = widgets["prompt_edit"].toPlainText().strip()
         command_template = widgets["command_edit"].text().strip() or defn["default_command"]
-        command_template = build_agent_command(command_template, agent_id, options)
 
         # Aplanamos el prompt a una sola línea (defensivo: cmd.exe puede
         # llegar a comportarse raro con saltos de línea embebidos aunque
@@ -927,7 +805,7 @@ class AIAgentsDialog(QDialog):
         # ya armado con comillas), para que Qt aplique su propio
         # escapado una sola vez por argumento, evitando el anidamiento
         # de comillas que rompía el prompt antes.
-        if agent_id in ("copilot", "anyapi"):
+        if agent_id in ("copilot", "gemini", "groq"):
             self.process.setProcessEnvironment(self._agent_environment(agent_id))
 
         # If preview mode, ensure we run on the preview branch (already checked out)

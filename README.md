@@ -112,14 +112,15 @@ Copilot CLI corre dentro de WebAgent mediante una terminal integrada.
 La separación de credenciales depende del almacenamiento usado por Copilot CLI.
 WebAgent no guarda tokens propios ni copia credenciales entre perfiles.
 
-### AnyAPI
+### Gemini y Groq
 
-AnyAPI ofrece acceso unificado a modelos de OpenAI, Anthropic, Google, Meta y
-otros mediante `https://api.anyapi.ai/v1`. El agente AnyAPI aparece en
-**Agentes IA** como proveedor opcional: requiere una API key y consulta
-`chat/completions`; no modifica archivos por sí mismo.
+Gemini y Groq aparecen en **Agentes IA** como proveedores opcionales. Gemini
+usa la API de Google AI Studio y Groq usa su API compatible con OpenAI; ambos
+ejecutan prompts sin modificar archivos por sí mismos. Las API keys se guardan
+por carpeta en la configuración local de agentes.
 
-Documentación: https://docs.anyapi.ai/
+- Gemini: `GEMINI_API_KEY` — https://aistudio.google.com/u/3/docs
+- Groq: `GROQ_API_KEY` — https://console.groq.com/docs/overview
 
 ### Refactors estructurales
 
@@ -170,7 +171,7 @@ WebAgent/
 ```
 
 Cada pestaña nueva incluye búsqueda de Google y una bandeja local de tareas.
-Las tareas se guardan por perfil; si existe `ANYAPI_API_KEY`, AnyAPI intenta
+Las tareas se guardan por perfil; si existe `GEMINI_API_KEY`, Gemini intenta
 asociarlas con una Colección y cada tarea ofrece un enlace explícito para
 abrirla en Copilot. Las tareas sin coincidencia preguntan antes de crear una
 Colección nueva.

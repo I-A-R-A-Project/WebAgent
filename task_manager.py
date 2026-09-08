@@ -4,10 +4,10 @@ import json
 import os
 import uuid
 from datetime import datetime
-from pathlib import Path
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 from paths import IA_DATA_DIR
-from urllib.request import Request, urlopen
 
 
 class TaskManager:
@@ -58,26 +58,26 @@ class TaskManager:
         self.save()
         return task
 
-    def classify_with_anyapi(self, task: dict, collections: list[dict], api_key: str) -> dict:
+    def classify_with_gemini(self, task: dict, collections: list[dict], api_key: str) -> dict:
         if not api_key:
             return task
         names = [c.get("name", "") for c in collections]
-        payload = json.dumps({
-            "model": os.environ.get("ANYAPI_MODEL", "openai/gpt-4-turbo"),
-            "messages": [{"role": "user", "content": (
-                "Clasifica esta tarea contra las colecciones disponibles. "
-                "Responde solo JSON {\"collection\": string|null}. "
-                f"Tarea: {task['text']}\nColecciones: {names}"
-            )}],
-        }).encode()
-        request = Request(
-            "https://api.anyapi.ai/v1/chat/completions",
-            data=payload,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        prompt = (
+            "Clasifica esta tarea contra las colecciones disponibles. "
+            "Responde solo JSON {\"collection\": string|null}. "
+            f"Tarea: {task['text']}\nColecciones: {names}"
         )
+        payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode()
+        model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{quote(model, safe='')}:generateContent?key={quote(api_key, safe='')}"
+        )
+        request = Request(url, data=payload, headers={"Content-Type": "application/json"})
         with urlopen(request, timeout=30) as response:
             body = json.loads(response.read().decode())
-        content = body["choices"][0]["message"]["content"]
+        content = body["candidates"][0]["content"]["parts"][0]["text"]
+        content = content.strip().removeprefix("```json").removesuffix("```").strip()
         chosen = json.loads(content).get("collection")
         for collection in collections:
             if chosen and collection.get("name") == chosen:

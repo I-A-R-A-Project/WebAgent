@@ -640,12 +640,12 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             profile_id = self.tab_data.get(id(webview), {}).get("profile_id", self.current_profile_id)
             manager = TaskManager(profile_id)
             task = manager.add(text.strip(), self.collection_manager.collections)
-            api_key = os.environ.get("ANYAPI_API_KEY", "")
+            api_key = os.environ.get("GEMINI_API_KEY", "")
             if api_key:
                 try:
-                    task = manager.classify_with_anyapi(task, self.collection_manager.collections, api_key)
-                except (OSError, ValueError, KeyError) as exc:
-                    self.statusBar().showMessage(f"AnyAPI no pudo clasificar la tarea: {exc}", 6000)
+                    task = manager.classify_with_gemini(task, self.collection_manager.collections, api_key)
+                except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
+                    self.statusBar().showMessage(f"Gemini no pudo clasificar la tarea: {exc}", 6000)
             webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("about:blank"))
             if not task["collection_id"]:
                 answer = QMessageBox.question(self, "Nueva Colección", f"La tarea no coincide con una Colección.\n¿Crear una para «{text}»?")
