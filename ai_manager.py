@@ -125,8 +125,7 @@ LEGACY_DEFAULT_COMMANDS = {
 # ======================================================================
 
 class AgentConfigStore:
-    """Guarda, por carpeta, las ramas cruda/limpia y el comando (y
-    última tarea, para Gemini) de cada uno de los 3 agentes.
+    """Guarda, por carpeta, ramas, comandos y credenciales por perfil.
     Clave = ruta absoluta de la carpeta."""
 
     def __init__(self):
@@ -144,6 +143,25 @@ class AgentConfigStore:
                 self.data = {}
         else:
             self.data = {}
+        self._migrate_profile_tokens()
+
+    def _migrate_profile_tokens(self):
+        """Mueve la disposición intermedia por carpeta al nivel de perfil."""
+        migrated = False
+        profile_agents = self.data.setdefault("profile_agents", {})
+        for folder, entry in list(self.data.items()):
+            if folder == "profile_agents":
+                continue
+            if not isinstance(entry, dict) or "profile_agents" not in entry:
+                continue
+            for profile_id, agents in entry.pop("profile_agents", {}).items():
+                destination = profile_agents.setdefault(profile_id, {})
+                for agent_id, config in agents.items():
+                    if agent_id not in destination:
+                        destination[agent_id] = config
+            migrated = True
+        if migrated:
+            self.save()
 
     def save(self):
         with open(self.config_file, "w") as f:
@@ -189,6 +207,10 @@ class AgentConfigStore:
                 )
                 entry["agents"][aid].setdefault("options", {})
 
+        # Las credenciales no pertenecen a la configuración de una carpeta.
+        for agent_config in entry["agents"].values():
+            agent_config.pop("auth_token", None)
+
         # Ensure autorun key exists for backward compatibility
         entry.setdefault("autorun", {})
         entry["autorun"].setdefault("command", "")
@@ -229,6 +251,17 @@ class AgentConfigStore:
         entry = self.get(folder)
         entry["agents"][agent_id].update(kwargs)
         self.data[str(folder)] = entry
+        self.save()
+
+    def get_profile_agent_token(self, folder: str, profile_id: str, agent_id: str) -> str:
+        profile_config = self.data.get("profile_agents", {}).get(profile_id, {})
+        return profile_config.get(agent_id, {}).get("auth_token", "")
+
+    def set_profile_agent_token(
+        self, folder: str, profile_id: str, agent_id: str, token: str
+    ):
+        profile_config = self.data.setdefault("profile_agents", {}).setdefault(profile_id, {})
+        profile_config.setdefault(agent_id, {})["auth_token"] = token
         self.save()
 
     def set_autorun(self, folder: str, enabled: bool, command: str):
@@ -364,7 +397,9 @@ class AIAgentsDialog(QDialog):
         environment.insert("COPILOT_HOME", str(self.copilot_home))
         # Device flow link is opened by WebAgent, never by system browser.
         environment.insert("BROWSER", "cmd.exe /c exit 0")
-        token = self.config_store.get(self.folder).get("agents", {}).get(agent_id, {}).get("auth_token", "")
+        token = self.config_store.get_profile_agent_token(
+            self.folder, self.profile_id, agent_id
+        )
         if token:
             if agent_id == "copilot":
                 environment.insert("COPILOT_GITHUB_TOKEN", token)
@@ -405,9 +440,21 @@ class AIAgentsDialog(QDialog):
             return
         self.profile_id = selected
         self.copilot_home = COPILOT_PROFILES_DIR / selected
+        self._refresh_profile_credentials()
         self._update_copilot_usage_display()
         if self.profile_changed_handler:
             self.profile_changed_handler(selected)
+
+    def _refresh_profile_credentials(self):
+        for agent_id in ("copilot", "gemini", "groq"):
+            widgets = self.agent_widgets.get(agent_id)
+            if not widgets or "token_edit" not in widgets:
+                continue
+            widgets["token_edit"].setText(
+                self.config_store.get_profile_agent_token(
+                    self.folder, self.profile_id, agent_id
+                )
+            )
 
     def _update_copilot_usage_display(self):
         profile_manager = getattr(self.parent(), "profile_manager", None)
@@ -603,7 +650,11 @@ class AIAgentsDialog(QDialog):
             btn_row.addWidget(help_btn)
 
         if agent_id in ("copilot", "gemini", "groq"):
-            token_edit = QLineEdit(agent_cfg.get("auth_token", ""))
+            token_edit = QLineEdit(
+                self.config_store.get_profile_agent_token(
+                    self.folder, self.profile_id, agent_id
+                )
+            )
             token_edit.setEchoMode(QLineEdit.EchoMode.Password)
             token_row = QHBoxLayout()
             token_row.addWidget(QLabel("API key:" if agent_id != "copilot" else "PAT:"))
@@ -616,9 +667,14 @@ class AIAgentsDialog(QDialog):
                 btn_row.addWidget(add_template_btn)
             else:
                 save_key_btn = QPushButton("Guardar API key")
-                save_key_btn.clicked.connect(lambda: self.config_store.set_agent_field(
-                    self.folder, agent_id, auth_token=token_edit.text().strip()
-                ))
+                save_key_btn.clicked.connect(
+                    lambda: self.config_store.set_profile_agent_token(
+                        self.folder,
+                        self.profile_id,
+                        agent_id,
+                        token_edit.text().strip(),
+                    )
+                )
                 btn_row.addWidget(save_key_btn)
         tab_layout.addLayout(btn_row)
 

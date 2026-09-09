@@ -418,7 +418,6 @@ class AgentConsolePanel(QWidget):
         if not folder or not Path(folder).is_dir():
             self._new_tab(agent_id, f"Directorio inexistente: {folder}", finished=True)
             return
-        config = AgentConfigStore().get(folder)
         environment = QProcessEnvironment.systemEnvironment()
         for name in (
             "COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
@@ -428,7 +427,9 @@ class AgentConsolePanel(QWidget):
         environment.insert("COPILOT_ALLOW_ALL", "1")
         environment.insert("COPILOT_HOME", str(COPILOT_PROFILES_DIR / profile_id))
         environment.insert("BROWSER", "cmd.exe /c exit 0")
-        token = config["agents"].get(agent_id, {}).get("auth_token", "")
+        token = self.config_store.get_profile_agent_token(
+            folder, profile_id, agent_id
+        )
         if agent_id == "copilot" and token:
             environment.insert("COPILOT_GITHUB_TOKEN", token)
         if agent_id == "gemini" and token:
@@ -511,6 +512,14 @@ class AgentConsolePanel(QWidget):
                 finished=True,
             )
             return
+        if agent_id == "gemini":
+            prompt_for_process = prompt + self._repository_context_for_gemini()
+            argv = [
+                token.replace("{prompt}", prompt_for_process).replace(
+                    "{script_dir}", script_dir
+                )
+                for token in tokens
+            ]
         self._start_log(agent_id, folder, " ".join(argv), task)
         self._new_tab(agent_id, f"$ {' '.join(argv)}\n\n")
         self.current_run_kind = "agent"
@@ -772,6 +781,64 @@ class AgentConsolePanel(QWidget):
             f"\nContexto Git: rama={branch}\n"
             f"Working tree:\n{status[1][:4000]}\n"
             "Inspeccioná los cambios existentes antes de modificar archivos."
+        )
+
+    def _repository_context_for_gemini(self):
+        """Incluye contexto acotado porque Gemini no puede inspeccionar el repo."""
+        folder = Path(self._working_folder())
+        if not folder.is_dir():
+            return (
+                "\n\nCONTEXTO DEL PROYECTO:\n"
+                "No se pudo inspeccionar la carpeta de trabajo. No asumas un stack "
+                "distinto; pedí el contexto faltante si es necesario."
+            )
+
+        files = []
+        for path in sorted(folder.rglob("*")):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(folder)
+            if any(
+                part in {".git", "__pycache__", "profiles", "cache"}
+                for part in relative.parts
+            ):
+                continue
+            files.append(str(relative))
+            if len(files) >= 40:
+                break
+
+        readme = ""
+        readme_path = folder / "README.md"
+        if readme_path.is_file():
+            try:
+                readme = readme_path.read_text(encoding="utf-8")[:3500]
+            except (OSError, UnicodeError):
+                readme = ""
+
+        git_context = ""
+        if GitVersioning.has_repo(str(folder)):
+            branch = GitVersioning.get_current_branch(str(folder)) or "(detached)"
+            ok, status, _ = GitVersioning.run(
+                str(folder), ["status", "--short"], timeout=10
+            )
+            git_context = (
+                f"\nRama actual: {branch}\n"
+                f"Estado Git:\n{status[:1500] if ok else '(no disponible)'}\n"
+            )
+
+        return (
+            "\n\nCONTEXTO OBLIGATORIO DEL PROYECTO:\n"
+            "Este repositorio es WebAgent, una aplicación de escritorio para Windows "
+            "escrita en Python con PyQt6 y PyQt6-WebEngine. No es una aplicación web "
+            "React/TypeScript/Tailwind y no debes inventar componentes, APIs HTTP ni "
+            "archivos que no existan. Antes de proponer cambios, usa las rutas y el "
+            "código real indicado abajo. Si la tarea es ambigua, explica qué archivos "
+            "reales se deben modificar y conserva las convenciones existentes.\n"
+            f"Carpeta de trabajo: {folder}\n"
+            f"Archivos detectados:\n- "
+            + "\n- ".join(files or ["(ninguno)"])
+            + git_context
+            + (f"\nREADME.md:\n{readme}\n" if readme else "")
         )
 
     def _open_copilot_auth_url(self, text, output_buffer=None):

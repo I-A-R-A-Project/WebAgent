@@ -29,6 +29,7 @@ from downloads import DownloadDialog
 from scripts.website_tools.dialogs import WebsiteToolsDialog
 from new_tab_page import render_new_tab_page
 from task_manager import TaskManager
+from ai_manager import AgentConfigStore
 from agent_console import AgentConsolePanel
 from agent_runs import attach_bridge, render_agent_runs_page
 from package_script_tab import PackageScriptTab
@@ -869,7 +870,11 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             profile_id = self.tab_data.get(id(webview), {}).get("profile_id", self.current_profile_id)
             manager = TaskManager(profile_id)
             task = manager.add(text.strip(), self.collection_manager.collections)
-            api_key = os.environ.get("GEMINI_API_KEY", "")
+            api_key = AgentConfigStore().get_profile_agent_token(
+                self.profile_manager.get_files_dir(),
+                profile_id,
+                "gemini",
+            )
             if api_key:
                 try:
                     task = manager.classify_with_gemini(task, self.collection_manager.collections, api_key)

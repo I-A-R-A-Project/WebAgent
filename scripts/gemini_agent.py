@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 def main() -> int:
     parser = argparse.ArgumentParser(description="Enviar un prompt a Gemini.")
     parser.add_argument("--prompt", required=True)
-    parser.add_argument("--model", default=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"))
+    parser.add_argument("--model", default=os.environ.get("GEMINI_MODEL", "gemini-3.6-flash"))
     parser.add_argument("--api-key", default=os.environ.get("GEMINI_API_KEY"))
     args = parser.parse_args()
     if not args.api_key:

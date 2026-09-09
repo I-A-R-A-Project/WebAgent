@@ -117,7 +117,7 @@ WebAgent no guarda tokens propios ni copia credenciales entre perfiles.
 Gemini y Groq aparecen en **Agentes IA** como proveedores opcionales. Gemini
 usa la API de Google AI Studio y Groq usa su API compatible con OpenAI; ambos
 ejecutan prompts sin modificar archivos por sí mismos. Las API keys se guardan
-por carpeta en la configuración local de agentes.
+por perfil en la configuración local de agentes.
 
 - Gemini: `GEMINI_API_KEY` — https://aistudio.google.com/u/3/docs
 - Groq: `GROQ_API_KEY` — https://console.groq.com/docs/overview
