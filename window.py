@@ -29,7 +29,7 @@ from scripts.website_tools.dialogs import WebsiteToolsDialog
 from new_tab_page import render_new_tab_page
 from task_manager import TaskManager
 from agent_console import AgentConsolePanel
-from agent_runs import render_agent_runs_page
+from agent_runs import attach_bridge, render_agent_runs_page
 from package_script_tab import PackageScriptTab
 from web_common.json_store import SidebarAppsStore
 from web_common.history import HistoryDialog, HistoryStore
@@ -337,7 +337,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         self.agent_console = AgentConsolePanel(
             self,
             self._ensure_agent_profile,
-            self._get_agent_workspace,
+            self._get_agent_collection_directories,
             auth_url_handler=self._open_copilot_auth_url,
             auth_success_handler=self._close_copilot_auth_tab,
             profile_name_getter=lambda profile_id: (
@@ -366,12 +366,21 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         container = SidebarContainer(self.rail, content_widget, self.app_panel)
         self.setCentralWidget(container)
 
-    def _get_agent_workspace(self) -> str:
-        app_dir = Path(__file__).resolve().parent
-        project_root = app_dir.parent
-        if (project_root / "WebAgent").is_dir() and (project_root / "web_common").is_dir():
-            return str(project_root)
-        return str(app_dir)
+    def _get_agent_collection_directories(self) -> list[tuple[str, str]]:
+        """Devuelve únicamente las carpetas configuradas en Colecciones."""
+        directories = []
+        seen = set()
+        for collection in self.collection_manager.collections:
+            folder = str(collection.get("download_dir", "")).strip()
+            if not folder:
+                continue
+            normalized = str(Path(folder).expanduser())
+            key = os.path.normcase(os.path.normpath(normalized))
+            if key in seen:
+                continue
+            seen.add(key)
+            directories.append((collection.get("name", "Colección"), normalized))
+        return directories
 
     def _check_copilot_usage_for_all_profiles(self):
         """Consulta el crédito de Copilot usando las cookies de cada perfil."""
@@ -673,6 +682,11 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         webview.reload()
 
     def _render_agent_runs_tab(self, webview):
+        bridges = getattr(self, "_agent_runs_bridges", None)
+        if bridges is None:
+            bridges = self._agent_runs_bridges = {}
+        if id(webview) not in bridges:
+            bridges[id(webview)] = attach_bridge(webview)
         webview.page().setHtml(
             render_agent_runs_page(),
             QUrl.fromLocalFile(str(Path(__file__).with_name("agent_runs.html"))),

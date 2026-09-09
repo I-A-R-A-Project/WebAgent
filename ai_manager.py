@@ -145,16 +145,6 @@ class AgentConfigStore:
         with open(self.config_file, "w") as f:
             json.dump(self.data, f, indent=2)
 
-    def get_console_directory(self) -> str:
-        """Devuelve el último directorio usado por la consola de agentes."""
-        directory = self.data.get("console_directory", "")
-        return directory if isinstance(directory, str) else ""
-
-    def set_console_directory(self, directory: str):
-        """Recuerda el directorio de trabajo de la consola entre sesiones."""
-        self.data["console_directory"] = str(Path(directory).expanduser())
-        self.save()
-
     def _default_entry(self) -> dict:
         return {
             "source_branch": "master",

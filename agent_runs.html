@@ -116,6 +116,20 @@
     font-size:12.5px;
     font-family:var(--sans);
   }
+  .trash-action{
+    background:var(--panel);
+    border:1px solid var(--border-soft);
+    color:var(--muted);
+    padding:7px 10px;
+    border-radius:7px;
+    font-size:12px;
+    cursor:pointer;
+    white-space:nowrap;
+  }
+  .trash-action:hover,.trash-action.active{
+    color:var(--text);
+    border-color:var(--amber);
+  }
 
   .view-toggle{
     display:flex;
@@ -244,6 +258,19 @@
     position:sticky;
     top:0;
   }
+  .day-group{border:0;}
+  .day-group > .day-heading{
+    cursor:pointer;
+    list-style:none;
+  }
+  .day-group > .day-heading::-webkit-details-marker{display:none;}
+  .day-group > .day-heading::before{
+    content:"▾";
+    display:inline-block;
+    width:12px;
+    color:var(--muted-2);
+  }
+  .day-group:not([open]) > .day-heading::before{content:"▸";}
   .run-card{
     padding:10px 14px;
     border-bottom:1px solid var(--border-soft);
@@ -252,6 +279,33 @@
     flex-direction:column;
     gap:4px;
   }
+  .run-card-head{
+    display:flex;
+    align-items:center;
+    gap:7px;
+  }
+  .run-card-head .run-top{flex:1 1 auto;min-width:0;}
+  .run-trash{
+    border:0;
+    background:transparent;
+    color:var(--muted-2);
+    cursor:pointer;
+    font-size:14px;
+    padding:1px 3px;
+    line-height:1;
+  }
+  .run-trash:hover{color:var(--red);}
+  .run-actions{display:flex;align-items:center;gap:4px;}
+  .run-restore{
+    border:0;
+    background:transparent;
+    color:var(--muted-2);
+    cursor:pointer;
+    font-size:14px;
+    padding:1px 3px;
+    line-height:1;
+  }
+  .run-restore:hover{color:var(--green);}
   .run-card:hover{background:#1c1f29;}
   .run-card.active{background:var(--panel-2); box-shadow:inset 3px 0 0 var(--amber);}
   .run-top{display:flex;align-items:center;gap:7px;}
@@ -263,6 +317,7 @@
   .badge.blocked{background:var(--violet);}
   .badge.auth{background:#e5636b;}
   .badge.unknown{background:var(--muted-2);}
+  .badge.omitted{background:var(--muted-2); opacity:.6;}
   .run-time{font-family:var(--mono);font-size:11.5px;color:var(--muted);}
   .run-branch{
     margin-left:auto;
@@ -311,6 +366,7 @@
   .status-pill.blocked{color:var(--violet); background:var(--violet-dim); border-color:#4a3e63;}
   .status-pill.auth{color:#f0a5a5; background:#3d2226; border-color:#5c2e32;}
   .status-pill.unknown{color:var(--muted); background:#22242c; border-color:var(--border-soft);}
+  .status-pill.omitted{color:var(--muted-2); background:#191b21; border-color:var(--border-soft); font-style:italic;}
 
   .detail-title{font-size:17px;font-weight:600; line-height:1.4;}
   .detail-sub{
@@ -542,6 +598,13 @@
     font-size:13px;
   }
 
+  .detail-loading{
+    color:var(--muted-2);
+    font-size:12.5px;
+    padding:18px 0;
+    font-style:italic;
+  }
+
   ::selection{background:#3a3320;}
 </style>
 </head>
@@ -566,6 +629,7 @@
       <option value="error">Error</option>
       <option value="blocked">Permiso denegado</option>
       <option value="auth">Falla de auth</option>
+      <option value="omitted">Omitido (límite de tamaño)</option>
     </select>
     <select id="branchFilter"><option value="all">Todas las ramas</option></select>
     <select id="profileFilter"><option value="all">Todos los perfiles</option></select>
@@ -574,6 +638,7 @@
       <option value="old">Más antiguos</option>
       <option value="credits">Más créditos</option>
     </select>
+    <button class="trash-action" id="trashToggle" type="button" title="Ver corridas enviadas a la papelera">🗑️ Papelera (0)</button>
   </div>
 </header>
 
@@ -584,8 +649,59 @@
 
 <div class="dashboard" id="dashboardView" style="display:none;"></div>
 
+<!--
+  Qt WebEngine expone este recurso automáticamente en cualquier página que
+  corra dentro de un QWebEngineView -- no hace falta empaquetarlo ni tocar
+  el sistema de recursos de Qt. Si esta página se abre fuera de la app (un
+  navegador común), esta carga simplemente falla y el detalle bajo demanda
+  queda deshabilitado (ver fetchLogContent más abajo); la lista y el
+  dashboard siguen funcionando igual.
+-->
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 <script>
 const RAW_LOGS = [];
+
+/* ================= PUENTE PYTHON<->JS (carga bajo demanda) ================= */
+// La página ya no trae el texto completo de cada log: solo un resumen
+// liviano (ver RAW_LOGS). El contenido completo de UNA corrida puntual se
+// pide recién al hacer click, a través de este canal. Sin el puente
+// conectado (por ejemplo, si todavía no se llamó a attach_bridge() del
+// lado de Python) la lista y el dashboard igual funcionan -- solo el
+// detalle de cada corrida no va a poder cargarse.
+let pyBridge = null;
+let bridgeReady = new Promise((resolve) => {
+  if(typeof qt === "undefined" || !qt.webChannelTransport || typeof QWebChannel === "undefined"){
+    resolve(null);
+    return;
+  }
+  try{
+    new QWebChannel(qt.webChannelTransport, function(channel){
+      pyBridge = channel.objects.pyBridge || null;
+      resolve(pyBridge);
+    });
+  }catch(_error){
+    resolve(null);
+  }
+});
+
+function fetchLogContent(filename){
+  return bridgeReady.then(bridge=>{
+    if(!bridge){
+      throw new Error(
+        "No se pudo conectar con la app para pedir el log completo. " +
+        "Si estás corriendo esto fuera de WebAgent (por ejemplo abriendo " +
+        "el .html suelto en un navegador), el detalle no está disponible " +
+        "a propósito: así la lista nunca carga todos los logs de una."
+      );
+    }
+    return new Promise((resolve, reject)=>{
+      bridge.get_log_content(filename, content=>{
+        if(!content){ reject(new Error("El log no existe o no se pudo leer.")); return; }
+        resolve(content);
+      });
+    });
+  });
+}
 
 /* ================= PARSER ================= */
 
@@ -595,6 +711,10 @@ function stripAnsi(s){
 
 function parseLog(filename, rawOriginal){
   const raw = stripAnsi(rawOriginal);
+  if(!raw.trim()) throw new Error("El log está vacío.");
+  if(!/^=== .+ ===\s*$/m.test(raw)){
+    throw new Error("Falta la cabecera de la ejecución.");
+  }
 
   const get = (re) => { const m = raw.match(re); return m ? m[1].trim() : null; };
 
@@ -738,6 +858,75 @@ function parseLog(filename, rawOriginal){
   };
 }
 
+function parseLogSafely(filename, rawOriginal){
+  try{
+    return parseLog(filename, rawOriginal);
+  }catch(error){
+    const message = error && error.message ? error.message : String(error);
+    return {
+      filename,
+      started:null,
+      startedStr:null,
+      agentLabel:"Log inválido",
+      isCommandRun:false,
+      isGitDiffCommand:false,
+      profileId:null,
+      profileName:null,
+      cwd:null,
+      branch:"—",
+      workingTree:[],
+      taskText:"No se pudo interpretar este log.",
+      timeline:[{type:"error", text:`${message} (${filename})`}],
+      summary:"",
+      commandOutput:null,
+      status:"error",
+      diffSections:null,
+      exitCode:null,
+      exitLabel:null,
+      changes:null,
+      credits:null,
+      tokensUp:null,
+      tokensUpDetail:null,
+      tokensDown:null,
+      tokensDownDetail:null,
+      resumeId:null,
+      parseError:message,
+    };
+  }
+}
+
+function invalidLogRun(filename, message){
+  return {
+    filename,
+    started:null,
+    startedStr:null,
+    agentLabel:"Log inválido",
+    isCommandRun:false,
+    isGitDiffCommand:false,
+    profileId:null,
+    profileName:null,
+    cwd:null,
+    branch:"—",
+    workingTree:[],
+    taskText:"No se pudo cargar este log.",
+    timeline:[{type:"error", text:`${message} (${filename})`}],
+    summary:"",
+    commandOutput:null,
+    status:"error",
+    diffSections:null,
+    exitCode:null,
+    exitLabel:null,
+    changes:null,
+    credits:null,
+    tokensUp:null,
+    tokensUpDetail:null,
+    tokensDown:null,
+    tokensDownDetail:null,
+    resumeId:null,
+    parseError:message,
+  };
+}
+
 function parseDiffSection(raw){
   const marker = "\n=== Diff exacto de la ejecución ===\n";
   const idx = raw.indexOf(marker);
@@ -816,8 +1005,43 @@ function renderFileDiff(chunk){
 
 /* ================= APP STATE ================= */
 
-let RUNS = RAW_LOGS.map(f => parseLog(f.filename, f.content));
+// RAW_LOGS ahora es liviano: un resumen por corrida (fecha, perfil, rama,
+// tarea, estado, créditos, líneas) sin el texto completo del log. Eso es
+// lo que se necesita para la lista y el dashboard.
+function summaryToRun(s){
+  let started = null;
+  if(s.startedStr){
+    const d = new Date(s.startedStr);
+    if(!isNaN(d)) started = d;
+  }
+  return Object.assign({started}, s);
+}
+
+function invalidSummaryRun(filename, message){
+  return {
+    filename, started:null, startedStr:null, agentLabel:"Log inválido",
+    isCommandRun:false, isGitDiffCommand:false, profileId:null, profileName:null,
+    cwd:null, branch:"—", taskText:"No se pudo leer este log.", status:"error",
+    exitCode:null, changes:null, credits:null, parseError:message,
+  };
+}
+
+let RUNS = RAW_LOGS.map(s => s.error ? invalidSummaryRun(s.filename, s.error) : summaryToRun(s));
 RUNS.sort((a,b)=> (b.started?.getTime()||0) - (a.started?.getTime()||0));
+
+// Detalle completo (timeline, diff, working tree, etc.) por corrida: se
+// pide bajo demanda al hacer click y se cachea acá para no volver a
+// pedirlo si el usuario vuelve a esa misma corrida.
+const detailCache = new Map();
+
+function loadRunDetail(filename){
+  if(detailCache.has(filename)) return Promise.resolve(detailCache.get(filename));
+  return fetchLogContent(filename).then(raw=>{
+    const detail = parseLogSafely(filename, raw);
+    detailCache.set(filename, detail);
+    return detail;
+  });
+}
 
 let activeId = null;
 let filterText = "";
@@ -826,6 +1050,13 @@ let filterBranch = "all";
 let filterProfile = "all";
 let sortOrder = "new";
 let currentView = "list";
+let showDeleted = false;
+let hiddenRunIds = new Set();
+try{
+  hiddenRunIds = new Set(JSON.parse(localStorage.getItem("webagent-hidden-agent-runs") || "[]"));
+}catch(_error){
+  hiddenRunIds = new Set();
+}
 
 const STATUS_LABEL = {success:"Éxito", error:"Error", blocked:"Bloqueado (permisos)", auth:"Falla de autenticación", unknown:"Sin datos"};
 
@@ -878,6 +1109,7 @@ function renderStats(){
 
 function filteredSorted(){
   let list = RUNS.filter(r=>{
+    if(showDeleted !== hiddenRunIds.has(r.filename)) return false;
     if(filterStatus!=='all' && r.status!==filterStatus) return false;
     if(filterBranch!=='all' && r.branch!==filterBranch) return false;
     if(filterProfile!=='all' && (r.profileName || "Sin perfil")!==filterProfile) return false;
@@ -893,6 +1125,60 @@ function filteredSorted(){
   return list;
 }
 
+function saveHiddenRuns(){
+  try{
+    localStorage.setItem("webagent-hidden-agent-runs", JSON.stringify([...hiddenRunIds]));
+  }catch(_error){
+    // La vista sigue funcionando aunque el perfil no permita persistir localStorage.
+  }
+}
+
+function updateTrashButton(){
+  const button = document.getElementById('trashToggle');
+  button.textContent = `${showDeleted ? "↩ Ver corridas" : "🗑️ Papelera"} (${hiddenRunIds.size})`;
+  button.classList.toggle('active', showDeleted);
+}
+
+function toggleRunDeleted(filename){
+  if(hiddenRunIds.has(filename)) hiddenRunIds.delete(filename);
+  else hiddenRunIds.add(filename);
+  saveHiddenRuns();
+  if(hiddenRunIds.has(activeId)) activeId = null;
+  updateTrashButton();
+  renderList();
+  renderDetail();
+}
+
+function permanentlyDeleteRun(filename){
+  if(!confirm("¿Eliminar definitivamente este log? Esta acción no se puede deshacer.")) return;
+  bridgeReady.then(bridge=>{
+    if(!bridge) throw new Error("No se pudo conectar con la app para eliminar el log.");
+    return new Promise((resolve, reject)=>{
+      bridge.delete_logs([filename], deleted=>{
+        if(!deleted || !deleted.includes(filename)){
+          reject(new Error("El log no existe o no se pudo eliminar."));
+          return;
+        }
+        resolve();
+      });
+    });
+  }).then(()=>{
+    RUNS = RUNS.filter(r=>r.filename !== filename);
+    hiddenRunIds.delete(filename);
+    detailCache.delete(filename);
+    if(activeId === filename) activeId = null;
+    saveHiddenRuns();
+    buildBranchOptions();
+    buildProfileOptions();
+    renderStats();
+    renderList();
+    renderDetail();
+  }).catch(error=>{
+    const message = error && error.message ? error.message : String(error);
+    window.alert(message);
+  });
+}
+
 function renderList(){
   const list = filteredSorted();
   const el = document.getElementById('runlist');
@@ -902,19 +1188,36 @@ function renderList(){
   }
   let html = "";
   let lastDay = null;
+  const groupedByDay = sortOrder === 'new' || sortOrder === 'old';
+  let dayCards = "";
+  let dayLabel = "";
+  const closeDay = () => {
+    if(!lastDay) return;
+    html += groupedByDay
+      ? `<details class="day-group" open><summary class="day-heading">${escapeHtml(dayLabel)}</summary>${dayCards}</details>`
+      : `<div class="day-heading">${escapeHtml(dayLabel)}</div>${dayCards}`;
+    dayCards = "";
+  };
   for(const r of list){
     const dayKey = r.started ? r.started.toDateString() : "none";
     if(dayKey !== lastDay){
-      html += `<div class="day-heading">${escapeHtml(fmtDay(r.started))}</div>`;
+      closeDay();
       lastDay = dayKey;
+      dayLabel = fmtDay(r.started);
     }
     const title = r.taskText.split("\n")[0].slice(0,110);
-    html += `
+    dayCards += `
       <div class="run-card ${r.filename===activeId?'active':''}" data-id="${escapeHtml(r.filename)}">
-        <div class="run-top">
-          <span class="badge ${r.status}"></span>
-          <span class="run-time">${fmtTime(r.started)}</span>
-          <span class="run-branch">${escapeHtml(r.branch)}</span>
+        <div class="run-card-head">
+          <div class="run-top">
+            <span class="badge ${r.status}"></span>
+            <span class="run-time">${fmtTime(r.started)}</span>
+            <span class="run-branch">${escapeHtml(r.branch)}</span>
+          </div>
+          <div class="run-actions">
+            ${showDeleted ? '<button class="run-restore" type="button" title="Restaurar corrida">↩</button>' : ""}
+            ${showDeleted ? '<button class="run-trash permanent-trash" type="button" title="Eliminar definitivamente el log">🗑️</button>' : '<button class="run-trash" type="button" title="Enviar a la papelera">🗑️</button>'}
+          </div>
         </div>
         <div class="run-title">${escapeHtml(title)}</div>
         <div class="run-meta">
@@ -924,9 +1227,32 @@ function renderList(){
         </div>
       </div>`;
   }
+  closeDay();
   el.innerHTML = html;
   el.querySelectorAll('.run-card').forEach(card=>{
-    card.addEventListener('click', ()=>{ activeId = card.dataset.id; renderList(); renderDetail(); });
+    card.addEventListener('click', event=>{
+      if(event.target.closest('.run-trash')) return;
+      activeId = card.dataset.id;
+      renderList();
+      renderDetail();
+    });
+  });
+  el.querySelectorAll('.run-trash').forEach(button=>{
+    button.addEventListener('click', event=>{
+      event.stopPropagation();
+      const filename = button.closest('.run-card').dataset.id;
+      if(button.classList.contains('permanent-trash')){
+        permanentlyDeleteRun(filename);
+      }else{
+        toggleRunDeleted(filename);
+      }
+    });
+  });
+  el.querySelectorAll('.run-restore').forEach(button=>{
+    button.addEventListener('click', event=>{
+      event.stopPropagation();
+      toggleRunDeleted(button.closest('.run-card').dataset.id);
+    });
   });
 }
 
@@ -1022,62 +1348,10 @@ function renderTimeline(run){
   return grouped.map(node => node.type === 'group' ? renderGroup(node) : renderSingleItem(node)).join("");
 }
 
-function renderDetail(){
-  const el = document.getElementById('detail');
-  const run = RUNS.find(r=>r.filename===activeId);
-  if(!run){ el.innerHTML = '<div class="placeholder">Elegí una corrida de la izquierda</div>'; return; }
-
-  const treeHtml = run.workingTree.length ? `
-    <div class="section-label">Working tree al iniciar</div>
-    <div class="tree-files">${run.workingTree.map(f=>`<span class="tree-file"><span class="code">${escapeHtml(f.code)}</span>${escapeHtml(f.path)}</span>`).join("")}</div>
-  ` : "";
-
-  const summaryHtml = run.summary ? `
-    <div class="section-label">Resultado final</div>
-    <div class="summary-box">${escapeHtml(run.summary)}</div>
-  ` : "";
-
-  let diffHtml = "";
-  if(run.diffSections && run.diffSections.length){
-    diffHtml = `<div class="section-label">Diff exacto de la ejecución</div>` +
-      run.diffSections.map(s => `
-        <div class="diff-section">
-          <div class="diff-section-label">${escapeHtml(s.label)}</div>
-          ${renderDiffBody(s.body)}
-        </div>
-      `).join("");
-  }
-
-  const footerHtml = `
-    <div class="footer-stats">
-      ${run.changes ? `<span><b>+${run.changes.added} -${run.changes.removed}</b> líneas</span>` : ""}
-      ${run.credits ? `<span><b>${run.credits.amount.toFixed(2)}</b> créditos${run.credits.duration?` · ${run.credits.duration}`:""}</span>` : ""}
-      ${run.tokensUp ? `<span>↑ <b>${run.tokensUp.trim()}</b></span>` : ""}
-      ${run.tokensDown ? `<span>↓ <b>${run.tokensDown.trim()}</b></span>` : ""}
-      ${run.exitCode!==null ? `<span>código <b>${escapeHtml(run.exitCode)}</b></span>` : ""}
-      ${run.resumeId ? `<span class="resume-tag" title="Click para copiar" data-resume="copilot --resume=${escapeHtml(run.resumeId)}">resume: ${escapeHtml(run.resumeId.slice(0,8))}…</span>` : ""}
-    </div>
-  `;
-
-  let activityHtml = "";
-  if(run.isGitDiffCommand){
-    // El diff ya se muestra abajo, coloreado y por archivo; mostrarlo también
-    // acá como salida cruda sería puro ruido duplicado.
-  } else if(run.isCommandRun){
-    activityHtml = run.commandOutput ? `
-      <div class="section-label">Salida del comando</div>
-      <div class="cmd-output">${renderColoredBlock(run.commandOutput)}</div>
-    ` : "";
-  } else {
-    activityHtml = `
-      <div class="section-label">Actividad del agente</div>
-      <div class="timeline">${renderTimeline(run) || '<div class="tl-item tl-note"><p>Sin pasos registrados.</p></div>'}</div>
-    `;
-  }
-
-  el.innerHTML = `
+function renderDetailShell(run, bodySlotHtml){
+  return `
     <div class="detail-head">
-      <span class="status-pill ${run.status}">${STATUS_LABEL[run.status]}</span>
+      <span class="status-pill ${run.status}">${STATUS_LABEL[run.status] || run.status}</span>
       <div>
         <div class="detail-title">${escapeHtml(run.taskText.split("\n")[0])}</div>
         <div class="detail-sub">
@@ -1092,16 +1366,64 @@ function renderDetail(){
     <div class="section-label">Tarea pedida</div>
     <div class="task-box">${escapeHtml(run.taskText)}</div>
 
-    ${treeHtml}
+    <div class="detail-body-slot">${bodySlotHtml}</div>
+  `;
+}
 
-    ${activityHtml}
+function renderDetailBodyInto(el, detail){
+  const treeHtml = (detail.workingTree && detail.workingTree.length) ? `
+    <div class="section-label">Working tree al iniciar</div>
+    <div class="tree-files">${detail.workingTree.map(f=>`<span class="tree-file"><span class="code">${escapeHtml(f.code)}</span>${escapeHtml(f.path)}</span>`).join("")}</div>
+  ` : "";
 
-    ${summaryHtml}
-    ${diffHtml}
-    ${footerHtml}
+  const summaryHtml = detail.summary ? `
+    <div class="section-label">Resultado final</div>
+    <div class="summary-box">${escapeHtml(detail.summary)}</div>
+  ` : "";
+
+  let diffHtml = "";
+  if(detail.diffSections && detail.diffSections.length){
+    diffHtml = `<div class="section-label">Diff exacto de la ejecución</div>` +
+      detail.diffSections.map(s => `
+        <div class="diff-section">
+          <div class="diff-section-label">${escapeHtml(s.label)}</div>
+          ${renderDiffBody(s.body)}
+        </div>
+      `).join("");
+  }
+
+  const footerHtml = `
+    <div class="footer-stats">
+      ${detail.changes ? `<span><b>+${detail.changes.added} -${detail.changes.removed}</b> líneas</span>` : ""}
+      ${detail.credits ? `<span><b>${detail.credits.amount.toFixed(2)}</b> créditos${detail.credits.duration?` · ${detail.credits.duration}`:""}</span>` : ""}
+      ${detail.tokensUp ? `<span>↑ <b>${detail.tokensUp.trim()}</b></span>` : ""}
+      ${detail.tokensDown ? `<span>↓ <b>${detail.tokensDown.trim()}</b></span>` : ""}
+      ${detail.exitCode!==null ? `<span>código <b>${escapeHtml(detail.exitCode)}</b></span>` : ""}
+      ${detail.resumeId ? `<span class="resume-tag" title="Click para copiar" data-resume="copilot --resume=${escapeHtml(detail.resumeId)}">resume: ${escapeHtml(detail.resumeId.slice(0,8))}…</span>` : ""}
+    </div>
   `;
 
-  const rt = el.querySelector('.resume-tag');
+  let activityHtml = "";
+  if(detail.isGitDiffCommand){
+    // El diff ya se muestra abajo, coloreado y por archivo; mostrarlo también
+    // acá como salida cruda sería puro ruido duplicado.
+  } else if(detail.isCommandRun){
+    activityHtml = detail.commandOutput ? `
+      <div class="section-label">Salida del comando</div>
+      <div class="cmd-output">${renderColoredBlock(detail.commandOutput)}</div>
+    ` : "";
+  } else {
+    activityHtml = `
+      <div class="section-label">Actividad del agente</div>
+      <div class="timeline">${renderTimeline(detail) || '<div class="tl-item tl-note"><p>Sin pasos registrados.</p></div>'}</div>
+    `;
+  }
+
+  const slot = el.querySelector('.detail-body-slot');
+  if(!slot) return;
+  slot.innerHTML = `${treeHtml}${activityHtml}${summaryHtml}${diffHtml}${footerHtml}`;
+
+  const rt = slot.querySelector('.resume-tag');
   if(rt){
     rt.addEventListener('click', ()=>{
       navigator.clipboard?.writeText(rt.dataset.resume).catch(()=>{});
@@ -1109,6 +1431,32 @@ function renderDetail(){
       setTimeout(()=>{ rt.textContent = "resume: " + rt.dataset.resume.split("=")[1].slice(0,8) + "…"; }, 1200);
     });
   }
+}
+
+function renderDetail(){
+  const el = document.getElementById('detail');
+  const run = RUNS.find(r=>r.filename===activeId);
+  if(!run){ el.innerHTML = '<div class="placeholder">Elegí una corrida de la izquierda</div>'; return; }
+
+  // El resumen liviano (fecha, perfil, rama, tarea, estado) ya lo tenemos
+  // sin pedir nada: se muestra al toque. El resto (actividad, diff,
+  // working tree) recién se pide al hacer click acá.
+  if(run.parseError){
+    el.innerHTML = renderDetailShell(run, `<div class="tl-item tl-fail"><div class="tl-error">${escapeHtml(run.parseError)}</div></div>`);
+    return;
+  }
+
+  el.innerHTML = renderDetailShell(run, '<div class="detail-loading">Cargando detalle…</div>');
+
+  loadRunDetail(run.filename).then(detail=>{
+    if(activeId !== run.filename) return; // el usuario ya cambió de corrida
+    renderDetailBodyInto(el, detail);
+  }).catch(error=>{
+    if(activeId !== run.filename) return;
+    const message = error && error.message ? error.message : String(error);
+    const slot = el.querySelector('.detail-body-slot');
+    if(slot) slot.innerHTML = `<div class="tl-item tl-fail"><div class="tl-error">${escapeHtml(message)}</div></div>`;
+  });
 }
 
 /* ================= DASHBOARD DE PERFILES ================= */
@@ -1213,6 +1561,12 @@ document.getElementById('statusFilter').addEventListener('change', e=>{ filterSt
 document.getElementById('branchFilter').addEventListener('change', e=>{ filterBranch = e.target.value; renderList(); });
 document.getElementById('profileFilter').addEventListener('change', e=>{ filterProfile = e.target.value; renderList(); });
 document.getElementById('sortOrder').addEventListener('change', e=>{ sortOrder = e.target.value; renderList(); });
+document.getElementById('trashToggle').addEventListener('click', ()=>{
+  showDeleted = !showDeleted;
+  updateTrashButton();
+  renderList();
+  renderDetail();
+});
 document.querySelectorAll('.view-btn').forEach(btn=>{
   btn.addEventListener('click', ()=> setView(btn.dataset.view));
 });
@@ -1220,8 +1574,9 @@ document.querySelectorAll('.view-btn').forEach(btn=>{
 buildBranchOptions();
 buildProfileOptions();
 renderStats();
+updateTrashButton();
 renderList();
-if(RUNS.length){ activeId = filteredSorted()[0].filename; renderList(); renderDetail(); }
+if(filteredSorted().length){ activeId = filteredSorted()[0].filename; renderList(); renderDetail(); }
 </script>
 </body>
 </html>

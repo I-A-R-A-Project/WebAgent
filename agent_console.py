@@ -17,7 +17,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QHBoxLayout, QLineEdit, QPlainTextEdit, QPushButton,
-    QFileDialog, QLabel, QMessageBox, QTabBar, QTabWidget, QVBoxLayout, QWidget,
+    QComboBox, QLabel, QMessageBox, QTabBar, QTabWidget, QVBoxLayout, QWidget,
 )
 from paths import COPILOT_PROFILES_DIR
 from paths import IA_DATA_DIR
@@ -180,7 +180,7 @@ class AgentConsolePanel(QWidget):
         self.task_edit.setFixedHeight(76)
         self.task_edit.setPlaceholderText(
             "copilot/codex/gemini/groq seguido de la tarea, o un comando de terminal... "
-            "(Shift+Enter para ejecutar; «cd» abre el selector de carpeta)"
+            "(Shift+Enter para ejecutar)"
         )
         apply_console_style(self.task_edit)
         controls.addWidget(self.task_edit, 1)
@@ -193,17 +193,16 @@ class AgentConsolePanel(QWidget):
         self.stop_btn.clicked.connect(self.stop_agent)
         buttons.addWidget(self.stop_btn)
         directory_row = QHBoxLayout()
-        remembered_directory = self.config_store.get_console_directory()
-        self.directory_edit = QLineEdit(
-            remembered_directory or self.folder_getter()
+        self.directory_combo = QComboBox()
+        self.directory_combo.setToolTip(
+            "Seleccioná una carpeta de una Colección para ejecutar el agente"
         )
-        self.directory_edit.setToolTip("Directorio de trabajo de la consola")
-        self.directory_edit.editingFinished.connect(self._remember_directory)
-        apply_console_style(self.directory_edit)
-        directory_row.addWidget(self.directory_edit)
+        apply_console_style(self.directory_combo)
+        directory_row.addWidget(self.directory_combo)
         buttons.addLayout(directory_row)
         controls.addLayout(buttons)
         layout.addLayout(controls)
+        self._refresh_directory_options()
 
         self.tabs = QTabWidget()
         prepare_tab_widget(self.tabs)
@@ -218,20 +217,31 @@ class AgentConsolePanel(QWidget):
         layout.addWidget(self.stdin_edit)
 
     def _working_folder(self) -> str:
-        return self.directory_edit.text().strip() or self.folder_getter()
+        return str(self.directory_combo.currentData() or "")
 
     def _profile_id(self):
         return self._profile_override or self.profile_getter()
 
-    def _remember_directory(self):
-        directory = self.directory_edit.text().strip()
-        if directory:
-            self.config_store.set_console_directory(directory)
+    def _refresh_directory_options(self):
+        current_folder = self._working_folder()
+        self.directory_combo.blockSignals(True)
+        self.directory_combo.clear()
+        directories = self.folder_getter() or []
+        for name, folder in directories:
+            self.directory_combo.addItem(f"{name}", folder)
+        index = self.directory_combo.findData(current_folder)
+        if index >= 0:
+            self.directory_combo.setCurrentIndex(index)
+        self.directory_combo.blockSignals(False)
+        self.directory_combo.setEnabled(bool(directories))
+        if not directories:
+            self.directory_combo.addItem("No hay carpetas configuradas en Colecciones")
 
     def run_cli_help(self, agent_id: str):
         """Muestra la ayuda del agente seleccionado en una pestaña de consola."""
         if agent_id not in ("copilot", "codex", "gemini", "groq") or self.process is not None:
             return
+        self._refresh_directory_options()
         if agent_id in ("copilot", "codex"):
             if shutil.which(agent_id) is None:
                 self._new_tab(agent_id, f"No se encontró el comando: {agent_id}", finished=True)
@@ -245,7 +255,7 @@ class AgentConsolePanel(QWidget):
             program = sys.executable
             arguments = [str(script), "--help"]
         folder = self._working_folder()
-        if not Path(folder).is_dir():
+        if not folder or not Path(folder).is_dir():
             self._new_tab(agent_id, f"Directorio inexistente: {folder}", finished=True)
             return
 
@@ -341,7 +351,7 @@ class AgentConsolePanel(QWidget):
         if not profile_id:
             return None
         folder = self._working_folder()
-        if not Path(folder).is_dir():
+        if not folder or not Path(folder).is_dir():
             self._new_tab(agent_id, f"Directorio inexistente: {folder}", finished=True)
             return
         config = AgentConfigStore().get(folder)
@@ -369,10 +379,13 @@ class AgentConsolePanel(QWidget):
         raw_task = self.task_edit.toPlainText().strip()
         if not raw_task:
             return
-        self._remember_directory()
-        if raw_task.lower() == "cd":
-            self._choose_directory()
-            self.task_edit.clear()
+        self._refresh_directory_options()
+        if not self._working_folder():
+            self._new_tab(
+                "command",
+                "No hay una carpeta de descarga configurada en las Colecciones.",
+                finished=True,
+            )
             return
         parts = raw_task.split(None, 1)
         agent_id = parts[0].lower().rstrip(":")
@@ -458,22 +471,26 @@ class AgentConsolePanel(QWidget):
         self.stop_btn.setEnabled(True)
 
     def _copilot_usage_is_at_limit(self):
-        """Evita iniciar Copilot con un perfil cuyo uso ya alcanzó el límite."""
-        usage = (
-            self.profile_usage_getter(self._profile_id())
-            if self.profile_usage_getter
-            else None
-        )
-        percent = usage.get("percent") if isinstance(usage, dict) else None
-        if not isinstance(percent, (int, float)) or percent < 90:
+        """Selecciona otro perfil antes de iniciar Copilot si el uso es alto."""
+        if not self.profile_usage_getter:
             return False
-        QMessageBox.warning(
-            self,
-            "Uso de Copilot demasiado alto",
-            f"El perfil seleccionado ya usa {percent:g}% de Copilot. "
-            "Elegí otro perfil con menos de 90% antes de ejecutar el agente.",
-        )
-        return True
+
+        current = self._profile_id()
+        if not current:
+            return False
+        self._copilot_profiles_tried = {current}
+
+        while True:
+            usage = self.profile_usage_getter(self._profile_id())
+            percent = usage.get("percent") if isinstance(usage, dict) else None
+            if not isinstance(percent, (int, float)) or percent < 90:
+                return False
+            if not self._rotate_copilot_profile():
+                self._write_log(
+                    f"\n--- No hay otro perfil disponible; el uso de Copilot "
+                    f"es {percent:g}% ---\n"
+                )
+                return True
 
     def _run_command(self, command):
         """Ejecuta un comando de terminal en el directorio seleccionado."""
@@ -482,7 +499,7 @@ class AgentConsolePanel(QWidget):
             self._new_tab("command", f"Comando bloqueado: {error}", finished=True)
             return
         folder = self._working_folder()
-        if not Path(folder).is_dir():
+        if not folder or not Path(folder).is_dir():
             self._new_tab("command", f"Directorio inexistente: {folder}", finished=True)
             return
 
@@ -571,14 +588,6 @@ class AgentConsolePanel(QWidget):
                 self._detect_auth_error(self.current_agent_id, data)
             self.current_output.insertPlainText(data)
             self.current_output.moveCursor(self.current_output.textCursor().MoveOperation.End)
-
-    def _choose_directory(self):
-        directory = QFileDialog.getExistingDirectory(
-            self, "Directorio de trabajo de la consola", self.directory_edit.text()
-        )
-        if directory:
-            self.directory_edit.setText(directory)
-            self._remember_directory()
 
     def _detect_auth_error(self, agent_id, text):
         if agent_id == "gemini" and "Falta GEMINI_API_KEY" in text:

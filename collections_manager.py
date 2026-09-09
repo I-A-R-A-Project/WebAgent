@@ -230,6 +230,9 @@ class CollectionWindowMixin:
             top.addChild(folder_child)
             self.collections_tree.addTopLevelItem(top)
             top.setExpanded(collection["id"] in expanded_ids)
+        agent_console = getattr(self, "agent_console", None)
+        if agent_console is not None:
+            agent_console._refresh_directory_options()
 
     def _create_collection_dialog(self):
         dialog = NewCollectionDialog(self)
