@@ -2,6 +2,7 @@ import sys
 import os
 import shutil
 import json
+import re
 from urllib.parse import parse_qs
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -695,6 +696,131 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
     def _handle_new_tab_request(self):
         return new_tab_page(self._add_tab)
 
+    def _execute_task(self, webview, profile_id: str, manager: TaskManager, task: dict):
+        """Relaciona automáticamente una tarea sin Colección y luego la ejecuta."""
+        if task.get("collection_id"):
+            collection = self.collection_manager.get_collection(task["collection_id"])
+            if collection and self._prepare_task_for_copilot(task):
+                self.agent_console.select_directory(collection.get("download_dir", ""))
+                QTimer.singleShot(0, self.agent_console.run_agent)
+            return
+
+        try:
+            context_dir = self.collection_manager.prepare_task_agent_context()
+        except (OSError, ValueError) as exc:
+            self.statusBar().showMessage(
+                f"No se pudo preparar el contexto del agente de tareas: {exc}", 8000
+            )
+            return
+
+        readme_paths = []
+        context_file = context_dir / "collections.json"
+        for collection in self.collection_manager.collections:
+            readme = context_dir / "readmes" / f'{collection.get("id", "")}.md'
+            readme_paths.append(
+                f'COLECCIÓN ID: {collection.get("id", "")}\n'
+                f'NOMBRE: {collection.get("name", "")}\n'
+                f'RUTA README: {readme.resolve()}'
+            )
+
+        if not readme_paths:
+            self._create_collection_for_task(webview, manager, task)
+            return
+
+        def finish_review(output: str):
+            match = re.search(r"WEBAGENT_COLLECTION_RESULT:\s*(\{.*\})", output)
+            decision = {}
+            if match:
+                try:
+                    decision = json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    decision = {}
+            ids = decision.get("collection_ids", [])
+            selected = next(
+                (item for item in self.collection_manager.collections if item.get("id") in ids),
+                None,
+            )
+            if selected is None and re.search(
+                r"\b(repositorios|proyectos|m[oó]dulos)\b", task["text"], re.IGNORECASE
+            ):
+                collection_paths = [
+                    (item, Path(item.get("download_dir", "")).resolve())
+                    for item in self.collection_manager.collections
+                    if item.get("download_dir")
+                ]
+                parent_candidates = []
+                for candidate, candidate_path in collection_paths:
+                    descendants = sum(
+                        1
+                        for other, other_path in collection_paths
+                        if other is not candidate
+                        and other_path != candidate_path
+                        and candidate_path in other_path.parents
+                    )
+                    if descendants:
+                        parent_candidates.append((descendants, candidate, candidate_path))
+                if parent_candidates:
+                    selected = max(
+                        parent_candidates,
+                        key=lambda entry: (entry[0], len(entry[2].parts)),
+                    )[1]
+            if selected is None:
+                name = str(decision.get("create_name") or task["text"][:60]).strip()
+                try:
+                    selected = self.collection_manager.create_collection(
+                        name or "Nueva tarea",
+                        str(self.profile_manager.get_files_dir()),
+                    )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    self.statusBar().showMessage(
+                        f"No se pudo crear la Colección para la tarea: {exc}", 8000
+                    )
+                    return
+            task["collection_id"] = selected["id"]
+            task["collection_name"] = selected["name"]
+            manager.save()
+            webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("about:blank"))
+            if self._prepare_task_for_copilot(task) and self.agent_console.select_directory(
+                selected.get("download_dir", "")
+            ):
+                QTimer.singleShot(0, self.agent_console.run_agent)
+
+        self.agent_console.run_collection_review(
+            task["text"],
+            str(context_dir),
+            "\n\n---\n\n".join(readme_paths)
+            + f"\n\nÍNDICE DE DATOS: {context_file.resolve()}",
+            finish_review,
+        )
+
+    def _create_collection_for_task(self, webview, manager: TaskManager, task: dict):
+        try:
+            collection = self.collection_manager.create_collection(
+                task["text"][:60].strip() or "Nueva tarea",
+                str(self.profile_manager.get_files_dir()),
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            self.statusBar().showMessage(
+                f"No se pudo crear la Colección para la tarea: {exc}", 8000
+            )
+            return
+        task["collection_id"] = collection["id"]
+        task["collection_name"] = collection["name"]
+        manager.save()
+        webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("about:blank"))
+        if self._prepare_task_for_copilot(task) and self.agent_console.select_directory(
+            collection["download_dir"]
+        ):
+            QTimer.singleShot(0, self.agent_console.run_agent)
+
+    def _prepare_task_for_copilot(self, task: dict) -> bool:
+        if not self._ensure_agent_profile():
+            return False
+        self.agent_console.task_edit.setPlainText(f"copilot {task['text']}")
+        self.agent_console.setVisible(True)
+        self.console_toggle.setText("⌃ Ocultar consola")
+        return True
+
     def _on_tab_url_changed(self, webview, url: QUrl):
         fragment = url.fragment()
         if fragment.startswith("cancel:"):
@@ -735,14 +861,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             manager = TaskManager(profile_id)
             task = manager.add(text.strip(), self.collection_manager.collections)
             webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("about:blank"))
-            if not task["collection_id"]:
-                answer = QMessageBox.question(self, "Nueva Colección", f"La tarea no coincide con una Colección.\n¿Crear una para «{text}»?")
-                if answer == QMessageBox.StandardButton.Yes:
-                    collection = self.collection_manager.create_collection(text[:60].strip() or "Nueva tarea")
-                    task["collection_id"] = collection["id"]
-                    task["collection_name"] = collection["name"]
-                    manager.save()
-                    webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("about:blank"))
+            self._execute_task(webview, profile_id, manager, task)
             return
         if url.scheme() == "ia" and url.host() == "task":
             text = parse_qs(url.query(), keep_blank_values=True).get("text", [""])[0]
@@ -756,14 +875,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
                 except (OSError, ValueError, KeyError, IndexError, TypeError) as exc:
                     self.statusBar().showMessage(f"Gemini no pudo clasificar la tarea: {exc}", 6000)
             webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("about:blank"))
-            if not task["collection_id"]:
-                answer = QMessageBox.question(self, "Nueva Colección", f"La tarea no coincide con una Colección.\n¿Crear una para «{text}»?")
-                if answer == QMessageBox.StandardButton.Yes:
-                    collection = self.collection_manager.create_collection(text[:60].strip() or "Nueva tarea")
-                    task["collection_id"] = collection["id"]
-                    task["collection_name"] = collection["name"]
-                    manager.save()
-                    webview.page().setHtml(render_new_tab_page(manager.tasks), QUrl("about:blank"))
+            self._execute_task(webview, profile_id, manager, task)
             return
         if webview is not self.current_webview():
             return

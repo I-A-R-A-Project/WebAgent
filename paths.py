@@ -26,3 +26,4 @@ except ModuleNotFoundError as exc:  # pragma: no cover - dependency layout check
 IA_DATA_DIR = app_data_dir("WebAgent")
 BROWSER_DATA_DIR = app_data_dir("MiniBrowser")
 COPILOT_PROFILES_DIR = IA_DATA_DIR / "copilot_profiles"
+TASK_AGENT_CONTEXT_DIR = IA_DATA_DIR / "task_agent_context"

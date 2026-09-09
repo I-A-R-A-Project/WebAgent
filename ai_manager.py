@@ -36,11 +36,15 @@ from file_ops import GitVersioning
 from paths import COPILOT_PROFILES_DIR, IA_DATA_DIR
 
 
-AUTORUN_ALLOWED_COMMANDS = {"git", "git.exe", "git.cmd", "npm", "npm.exe", "npm.cmd"}
+AUTORUN_ALLOWED_COMMANDS = {
+    "git", "git.exe", "git.cmd", "npm", "npm.exe", "npm.cmd",
+    "python", "python.exe", "py", "pytest", "pytest.exe",
+    "cargo", "cargo.exe", "go", "go.exe", "dotnet", "dotnet.exe",
+}
 
 
 def validate_autorun_command(command: str) -> tuple[bool, str]:
-    """Valida que autorun ejecute solamente git o npm sin encadenar comandos."""
+    """Valida que autorun ejecute un binario de verificación permitido."""
     command = command.strip()
     if not command:
         return False, "El comando no puede estar vacío."
@@ -48,7 +52,7 @@ def validate_autorun_command(command: str) -> tuple[bool, str]:
         return False, "No se permiten operadores, redirecciones ni sustitución de comandos."
     match = re.match(r"""^\s*(['"]?)([A-Za-z0-9_.-]+)\1(?:\s|$)""", command)
     if not match or match.group(2).lower() not in AUTORUN_ALLOWED_COMMANDS:
-        return False, "El comando debe comenzar con git o npm."
+        return False, "El comando debe comenzar con un verificador permitido (git, npm, python, pytest, cargo, go o dotnet)."
     return True, ""
 
 
@@ -154,7 +158,12 @@ class AgentConfigStore:
                 for aid, defn in AGENT_DEFS.items()
             },
             # Autorun: si enabled=True, ejecutar 'autorun.command' tras un run de agente
-            "autorun": {"enabled": False, "command": ""},
+            "autorun": {
+                "enabled": False,
+                "command": "",
+                "auto_detect": True,
+                "auto_commit": True,
+            },
         }
 
     def _migrate(self, entry: dict) -> dict:
@@ -181,7 +190,11 @@ class AgentConfigStore:
                 entry["agents"][aid].setdefault("options", {})
 
         # Ensure autorun key exists for backward compatibility
-        entry.setdefault("autorun", {"enabled": False, "command": ""})
+        entry.setdefault("autorun", {})
+        entry["autorun"].setdefault("command", "")
+        entry["autorun"].setdefault("enabled", False)
+        entry["autorun"].setdefault("auto_detect", True)
+        entry["autorun"].setdefault("auto_commit", True)
         entry["source_branch"] = "master"
         entry["target_branch"] = "main"
 
@@ -514,7 +527,13 @@ class AIAgentsDialog(QDialog):
         enabled = QCheckBox("Ejecutar automáticamente")
         enabled.setChecked(bool(autorun.get("enabled")))
         command = QLineEdit(autorun.get("command", ""))
-        command.setPlaceholderText("Ej: npm test o git status")
+        command.setPlaceholderText("Vacío: detectar checks por lenguaje; o Ej: npm test")
+        hint = QLabel(
+            "Los checks corren localmente y en secuencia. Solo los errores quedan "
+            "para revisión; Git puede cerrar los cambios automáticamente."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray; font-size: 11px;")
         save = QPushButton("Guardar autorun")
         def save_autorun():
             try:
@@ -524,10 +543,14 @@ class AIAgentsDialog(QDialog):
             except ValueError as exc:
                 QMessageBox.warning(self, "Autorun inválido", str(exc))
                 return
-            QMessageBox.information(self, "Autorun guardado", "Solo se permiten comandos git y npm.")
+            QMessageBox.information(
+                self, "Autorun guardado",
+                "Vacío detecta checks por lenguaje; un comando escrito reemplaza esa secuencia.",
+            )
         save.clicked.connect(save_autorun)
         form.addRow(enabled)
         form.addRow("Comando:", command)
+        form.addRow("", hint)
         form.addRow("", save)
         layout.addWidget(box)
 
@@ -639,32 +662,9 @@ class AIAgentsDialog(QDialog):
         self.log_view.setMinimumHeight(140)
         layout.addWidget(self.log_view)
 
-        stdin_row = QHBoxLayout()
-        self.stdin_edit = QLineEdit()
-        self.stdin_edit.setPlaceholderText(
-            "Si el agente te pregunta algo, respondé acá y Enter (deshabilitado si no hay nada corriendo)"
-        )
-        self.stdin_edit.setEnabled(False)
-        self.stdin_edit.returnPressed.connect(self._send_to_process)
-        self.send_stdin_btn = QPushButton("Enviar")
-        self.send_stdin_btn.setEnabled(False)
-        self.send_stdin_btn.clicked.connect(self._send_to_process)
-        stdin_row.addWidget(self.stdin_edit)
-        stdin_row.addWidget(self.send_stdin_btn)
-        layout.addLayout(stdin_row)
 
     def _append_log(self, text: str):
         self.log_view.append(text)
-
-    def _send_to_process(self):
-        if not self.process or self.process.state() == QProcess.ProcessState.NotRunning:
-            return
-        text = self.stdin_edit.text()
-        if not text:
-            return
-        self.process.write((text + "\n").encode("utf-8"))
-        self._append_log(f"> {text}")
-        self.stdin_edit.clear()
 
     # ---------- Ejecutar un agente ----------
 
@@ -683,14 +683,6 @@ class AIAgentsDialog(QDialog):
             QMessageBox.warning(
                 self, f"{defn['check_binary']} no encontrado",
                 f"No se encontró '{defn['check_binary']}' en el PATH.\n\nInstalación: {defn['install_hint']}",
-            )
-            return
-
-        if self.process is not None:
-            QMessageBox.information(
-                self, "Aviso",
-                f"Ya hay un agente corriendo ({AGENT_DEFS[self.active_agent]['short_label']}). "
-                "Esperá a que termine o detenelo antes de lanzar otro.",
             )
             return
 
@@ -793,8 +785,6 @@ class AIAgentsDialog(QDialog):
         except Exception:
             pass
         widgets["stop_btn"].setEnabled(True)
-        self.stdin_edit.setEnabled(True)
-        self.send_stdin_btn.setEnabled(True)
 
         self.process = QProcess(self)
         self.process.setWorkingDirectory(self.folder)
@@ -854,8 +844,6 @@ class AIAgentsDialog(QDialog):
         self._set_other_agents_enabled("copilot", False)
         self.agent_widgets["copilot"]["run_btn"].setEnabled(False)
         self.agent_widgets["copilot"]["stop_btn"].setEnabled(True)
-        self.stdin_edit.setEnabled(True)
-        self.send_stdin_btn.setEnabled(True)
         self._append_log(f"\n=== Autenticando Copilot ({self.profile_id}) ===\n")
         self.process = QProcess(self)
         self.process.setWorkingDirectory(self.folder)
@@ -936,8 +924,6 @@ class AIAgentsDialog(QDialog):
             self.agent_widgets[self.active_agent]["run_btn"].setEnabled(True)
             self.agent_widgets[self.active_agent]["stop_btn"].setEnabled(False)
         self._set_other_agents_enabled(self.active_agent or "", True)
-        self.stdin_edit.setEnabled(False)
-        self.send_stdin_btn.setEnabled(False)
 
         self.process = None
         self.active_agent = None
