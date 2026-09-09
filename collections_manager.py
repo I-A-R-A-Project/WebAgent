@@ -18,8 +18,11 @@ import json
 import re
 import shutil
 import uuid
+import unicodedata
+from collections import defaultdict
 from pathlib import Path
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
@@ -133,32 +136,98 @@ class CollectionManager:
 
     @staticmethod
     def _collection_tags(collection: dict, readme: Path | None) -> list[str]:
-        """Obtiene etiquetas generales para ayudar a clasificar la Colección."""
-        sources = [str(collection.get("name", ""))]
-        download_dir = str(collection.get("download_dir", ""))
-        if download_dir:
-            sources.extend(Path(download_dir).parts[-3:])
-        if readme:
-            try:
-                sources.append(readme.read_text(encoding="utf-8")[:12000])
-            except (OSError, UnicodeError):
-                pass
-        for item in collection.get("items", []):
-            sources.extend([str(item.get("title", "")), str(item.get("url", ""))])
+        """Obtiene tags relevantes y estables para clasificar una Colección.
+
+        La relevancia depende del origen: el nombre y los títulos de marcadores
+        son evidencia fuerte, mientras que una ruta o una URL sólo sirven como
+        apoyo. Así se evita convertir el README completo o un identificador en
+        una lista de tags.
+        """
+        explicit = collection.get("tags", [])
+        if isinstance(explicit, str):
+            explicit = re.split(r"[,;]", explicit)
+        if isinstance(explicit, list):
+            tags = []
+            for value in explicit:
+                tag = re.sub(r"\s+", " ", str(value).strip().casefold())
+                if tag and tag not in tags:
+                    tags.append(tag)
+            if tags:
+                return tags[:16]
 
         stop_words = {
-            "the", "and", "for", "with", "from", "this", "that", "una", "uno",
-            "para", "con", "desde", "sobre", "esta", "este", "los", "las",
-            "del", "por", "que", "una", "como", "más", "www", "https", "http",
-            "com", "org", "github", "readme", "repository", "repositorio",
+            "the", "and", "for", "with", "from", "this", "that", "your",
+            "una", "uno", "unos", "unas", "para", "con", "desde", "sobre",
+            "esta", "este", "estos", "estas", "los", "las", "del", "por",
+            "que", "como", "más", "entre", "sin", "sus", "son", "hay",
+            "www", "https", "http", "com", "org", "net", "io", "github",
+            "readme", "repository", "repositorio", "collection", "coleccion",
+            "colección", "carpeta", "folder", "directory", "project",
+            "proyecto", "web", "page", "página", "index", "main", "www",
         }
-        tags = []
-        for source in sources:
-            for tag in re.findall(r"[a-z0-9áéíóúüñ][a-z0-9áéíóúüñ_-]{2,}", source.casefold()):
-                tag = tag.strip("_-")
-                if tag and tag not in stop_words and tag not in tags:
-                    tags.append(tag)
-        return tags[:16]
+        token_pattern = re.compile(
+            r"[a-z0-9áéíóúüñ][a-z0-9áéíóúüñ']{2,}", re.IGNORECASE
+        )
+        scores = defaultdict(float)
+        first_seen = {}
+        occurrence_count = defaultdict(int)
+
+        def add_text(text: str, weight: float):
+            for token in token_pattern.findall(text.casefold()):
+                token = token.strip("'")
+                if not token or token in stop_words:
+                    continue
+                folded = "".join(
+                    char for char in unicodedata.normalize("NFKD", token)
+                    if not unicodedata.combining(char)
+                )
+                if folded in stop_words or folded.isdigit():
+                    continue
+                if len(folded) < 4 or re.fullmatch(r"[0-9a-f]{8,}", folded):
+                    continue
+                if token not in first_seen:
+                    first_seen[token] = len(first_seen)
+                occurrence_count[token] += 1
+                scores[token] += weight
+
+        add_text(str(collection.get("name", "")), 8)
+        download_dir = str(collection.get("download_dir", ""))
+        if download_dir:
+            add_text(Path(download_dir).name, 1)
+
+        readme_text = ""
+        if readme:
+            try:
+                readme_text = readme.read_text(encoding="utf-8")[:12000]
+            except (OSError, UnicodeError):
+                pass
+        if readme_text:
+            headings = " ".join(
+                line.lstrip("# ").strip()
+                for line in readme_text.splitlines()
+                if line.lstrip().startswith("#")
+            )
+            add_text(headings, 4)
+            prose = re.sub(r"`[^`]*`|https?://\S+|[*_>\[\]()]",
+                           " ", readme_text)
+            add_text(prose, 1)
+
+        for item in collection.get("items", []):
+            add_text(str(item.get("title", "")), 4)
+            url = str(item.get("url", "")).strip()
+            if url:
+                parsed = urlsplit(url if "://" in url else f"https://{url}")
+                add_text(parsed.hostname or "", 1)
+                add_text(parsed.path.replace("/", " "), 0.5)
+
+        ranked = sorted(
+            scores,
+            key=lambda tag: (
+                -(scores[tag] + min(occurrence_count[tag], 3) * 0.5),
+                first_seen[tag],
+            ),
+        )
+        return ranked[:16]
 
     def write_collections_summary(self) -> Path:
         """Escribe el índice general de contenido y jerarquía de Colecciones."""
@@ -729,12 +798,15 @@ class CollectionWindowMixin:
             menu = QMenu(self)
             rename = menu.addAction("Cambiar nombre...")
             folder = menu.addAction("Carpeta de descarga...")
+            agent_config = menu.addAction("Configurar agentes IA...")
             delete = menu.addAction("Eliminar Colección")
             action = menu.exec(self.collections_tree.mapToGlobal(pos))
             if action == rename:
                 self._rename_collection(collection_id)
             elif action == folder:
                 self._pick_collection_folder(collection_id)
+            elif action == agent_config:
+                self._open_collection_agent_config(collection_id)
             elif action == delete:
                 self._delete_collection(collection_id)
         elif kind == "bookmark":
@@ -750,6 +822,28 @@ class CollectionWindowMixin:
             change = menu.addAction("Cambiar carpeta de descarga...")
             if menu.exec(self.collections_tree.mapToGlobal(pos)) == change:
                 self._pick_collection_folder(data["collection_id"])
+
+    def _open_collection_agent_config(self, collection_id: str):
+        collection = self.collection_manager.get_collection(collection_id)
+        if not collection:
+            return
+        folder = str(collection.get("download_dir", "")).strip()
+        if not folder:
+            QMessageBox.warning(
+                self,
+                "Sin carpeta de repositorio",
+                "La Colección necesita una carpeta de descarga antes de configurar "
+                "sus agentes IA.",
+            )
+            return
+        from ai_manager import RepositoryConfigDialog
+
+        dialog = RepositoryConfigDialog(
+            self,
+            folder,
+            repository_name=collection.get("name", ""),
+        )
+        dialog.exec()
 
     def _toggle_collection_git(self, collection_id: str):
         collection = self.collection_manager.get_collection(collection_id)

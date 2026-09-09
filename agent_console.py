@@ -168,8 +168,11 @@ class AgentConsolePanel(QWidget):
         self._autorun_queue = []
         self._autorun_failures = []
         self._autorun_auto_commit = False
+        self._pending_runs = []
+        self._queue_drain_scheduled = False
         self.current_output = None
         self._log_file = None
+        self._current_task = None
         self._git_start_head = None
         self._copilot_output_buffer = ""
         self._copilot_quota_detected = False
@@ -224,6 +227,43 @@ class AgentConsolePanel(QWidget):
             or self.autorun_process is not None
             or self.copilot_login_process is not None
         )
+
+    def _has_active_execution(self) -> bool:
+        """Indica si la consola está ocupada con una ejecución o su autorun."""
+        return bool(self.processes or self.autorun_process is not None)
+
+    def _queue_run(self, raw_task, folder, completion_callback):
+        self._pending_runs.append(
+            {
+                "task": raw_task,
+                "folder": folder,
+                "completion_callback": completion_callback,
+            }
+        )
+        self.task_edit.clear()
+
+    def _start_next_queued_run(self):
+        if self._queue_drain_scheduled or self._has_active_execution():
+            return
+        self._queue_drain_scheduled = True
+
+        def start():
+            self._queue_drain_scheduled = False
+            if self._has_active_execution() or not self._pending_runs:
+                return
+            queued = self._pending_runs.pop(0)
+            if not self.select_directory(queued["folder"]):
+                self._new_tab(
+                    "command",
+                    f"Directorio inexistente: {queued['folder']}",
+                    finished=True,
+                )
+                self._start_next_queued_run()
+                return
+            self.task_edit.setPlainText(queued["task"])
+            self.run_agent(queued["completion_callback"], _from_queue=True)
+
+        QTimer.singleShot(0, start)
 
     def _working_folder(self) -> str:
         return str(self.directory_combo.currentData() or "")
@@ -387,7 +427,6 @@ class AgentConsolePanel(QWidget):
         else:
             self.process.start(program, arguments)
         self.setVisible(True)
-        self.run_btn.setEnabled(False)
 
     def _start_log(self, agent_id: str, folder: str, command: str, task: str):
         log_dir = IA_DATA_DIR / "agent_logs"
@@ -414,6 +453,36 @@ class AgentConsolePanel(QWidget):
             f"command: {command}\n"
             f"task:\n{task}\n\n"
         )
+
+    def _save_gemini_response(self, task: str, response: str):
+        """Guarda la respuesta Markdown junto al repositorio consultado."""
+        if self.current_agent_id != "gemini" or not response.strip():
+            return
+        folder = Path(self._active_folder or "")
+        if not folder.is_dir() or self._log_file is None:
+            return
+
+        response_path = folder / f"{self._log_file.stem}.md"
+        suffix = 2
+        while response_path.exists():
+            response_path = folder / f"{self._log_file.stem}-{suffix}.md"
+            suffix += 1
+        content = (
+            "# Respuesta de Gemini\n\n"
+            f"- **Fecha:** {datetime.now().isoformat()}\n"
+            f"- **Log:** `{self._log_file.name}`\n\n"
+            "## Pregunta\n\n"
+            f"{task.strip()}\n\n"
+            "## Respuesta\n\n"
+            f"{response.strip()}\n"
+        )
+        try:
+            response_path.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            warning = f"\n--- No se pudo guardar la respuesta de Gemini: {exc} ---\n"
+            self._write_log(warning)
+            if self.current_output:
+                self.current_output.appendPlainText(warning)
 
     def _write_git_diff(self):
         """Guarda en el log el diff exacto producido por la ejecución."""
@@ -482,12 +551,10 @@ class AgentConsolePanel(QWidget):
             environment.insert("GROQ_API_KEY", token)
         return environment
 
-    def run_agent(self, completion_callback=None):
+    def run_agent(self, completion_callback=None, _from_queue=False):
         raw_task = self.task_edit.toPlainText().strip()
         if not raw_task:
             return
-        if completion_callback is not None:
-            self._agent_completion_callback = completion_callback
         self._refresh_directory_options()
         if not self._working_folder():
             self._new_tab(
@@ -496,6 +563,11 @@ class AgentConsolePanel(QWidget):
                 finished=True,
             )
             return
+        if not _from_queue and self._has_active_execution():
+            self._queue_run(raw_task, self._working_folder(), completion_callback)
+            return
+        if completion_callback is not None:
+            self._agent_completion_callback = completion_callback
         parts = raw_task.split(None, 1)
         agent_id = parts[0].lower().rstrip(":")
         retrying_copilot = self._copilot_retry_pending
@@ -517,6 +589,7 @@ class AgentConsolePanel(QWidget):
             )
             return
         self.current_agent_id = agent_id
+        self._current_task = task
         if not self._profile_id():
             self._new_tab(
                 agent_id,
@@ -559,7 +632,7 @@ class AgentConsolePanel(QWidget):
             )
             return
         if agent_id == "gemini":
-            prompt_for_process = prompt + self._repository_context_for_gemini()
+            prompt_for_process = prompt + self._repository_context_for_gemini(prompt)
             argv = [
                 token.replace("{prompt}", prompt_for_process).replace(
                     "{script_dir}", script_dir
@@ -570,7 +643,7 @@ class AgentConsolePanel(QWidget):
         self._new_tab(
             agent_id,
             "\n",
-            prompt=f"$ {' '.join(argv)}\n\nPrompt: {task}",
+            prompt=f"$ {' '.join(argv)}",
         )
         self.current_run_kind = "agent"
         self._active_folder = folder
@@ -591,7 +664,6 @@ class AgentConsolePanel(QWidget):
         else:
             self.process.start(argv[0], argv[1:])
         self.setVisible(True)
-        self.run_btn.setEnabled(False)
         self.task_edit.clear()
 
     def _copilot_usage_is_at_limit(self):
@@ -659,7 +731,6 @@ class AgentConsolePanel(QWidget):
                 return
             self.process.start(tokens[0], tokens[1:])
         self.setVisible(True)
-        self.run_btn.setEnabled(False)
         self.task_edit.clear()
 
     def _new_tab(self, agent_id, initial="", finished=False, prompt=""):
@@ -861,8 +932,8 @@ class AgentConsolePanel(QWidget):
             "Inspeccioná los cambios existentes antes de modificar archivos."
         )
 
-    def _repository_context_for_gemini(self):
-        """Incluye contexto acotado porque Gemini no puede inspeccionar el repo."""
+    def _repository_context_for_gemini(self, task: str):
+        """Incluye sólo las rutas del repositorio mencionadas con ``@``."""
         folder = Path(self._working_folder())
         if not folder.is_dir():
             return (
@@ -870,28 +941,6 @@ class AgentConsolePanel(QWidget):
                 "No se pudo inspeccionar la carpeta de trabajo. No asumas un stack "
                 "distinto; pedí el contexto faltante si es necesario."
             )
-
-        files = []
-        for path in sorted(folder.rglob("*")):
-            if not path.is_file():
-                continue
-            relative = path.relative_to(folder)
-            if any(
-                part in {".git", "__pycache__", "profiles", "cache"}
-                for part in relative.parts
-            ):
-                continue
-            files.append(str(relative))
-            if len(files) >= 40:
-                break
-
-        readme = ""
-        readme_path = folder / "README.md"
-        if readme_path.is_file():
-            try:
-                readme = readme_path.read_text(encoding="utf-8")[:3500]
-            except (OSError, UnicodeError):
-                readme = ""
 
         git_context = ""
         if GitVersioning.has_repo(str(folder)):
@@ -904,6 +953,34 @@ class AgentConsolePanel(QWidget):
                 f"Estado Git:\n{status[:1500] if ok else '(no disponible)'}\n"
             )
 
+        references = []
+        for match in re.finditer(r"(?<!\w)@([^\s]+)", task):
+            raw_reference = match.group(1).rstrip(".,;:!?)]}\"'")
+            if not raw_reference:
+                continue
+            candidate = Path(raw_reference)
+            if candidate.is_absolute() or ".." in candidate.parts:
+                continue
+            resolved = folder / candidate
+            if not resolved.exists():
+                continue
+            relative = resolved.relative_to(folder)
+            if any(part in {".git", "__pycache__", "profiles", "cache"} for part in relative.parts):
+                continue
+            display = str(relative)
+            if resolved.is_dir():
+                display += "\\"
+            if display not in references:
+                references.append(display)
+
+        references_context = ""
+        if references:
+            references_context = (
+                "\nRutas del repositorio mencionadas explícitamente en la tarea:\n- "
+                + "\n- ".join(references)
+                + "\n"
+            )
+
         return (
             "\n\nCONTEXTO OBLIGATORIO DEL PROYECTO:\n"
             "Este repositorio es WebAgent, una aplicación de escritorio para Windows "
@@ -913,10 +990,10 @@ class AgentConsolePanel(QWidget):
             "código real indicado abajo. Si la tarea es ambigua, explica qué archivos "
             "reales se deben modificar y conserva las convenciones existentes.\n"
             f"Carpeta de trabajo: {folder}\n"
-            f"Archivos detectados:\n- "
-            + "\n- ".join(files or ["(ninguno)"])
+            "No se envía un listado automático del repositorio. Para aportar contexto "
+            "de una ruta, mencionála en la tarea con @ruta/ o @archivo.\n"
+            + references_context
             + git_context
-            + (f"\nREADME.md:\n{readme}\n" if readme else "")
         )
 
     def _open_copilot_auth_url(self, text, output_buffer=None):
@@ -962,26 +1039,29 @@ class AgentConsolePanel(QWidget):
             output.appendPlainText(f"\n--- terminó (código {exit_code}) ---")
         self._write_log(f"\n--- terminó (código {exit_code}) ---\n")
         run_kind = self.current_run_kind
-        self.run_btn.setEnabled(True)
+        result = output.toPlainText() if output else ""
+        if run_kind == "agent" and exit_code == 0:
+            response = re.split(r"\n--- terminó \(código -?\d+\) ---", result, maxsplit=1)[0]
+            self._save_gemini_response(self._current_task or "", response)
         if run_kind == "agent" and self._agent_completion_callback:
             callback = self._agent_completion_callback
             self._agent_completion_callback = None
-            result = output.toPlainText() if output else ""
             self.current_run_kind = None
             self.current_agent_id = None
             self._write_git_diff()
             self._add_close_button(output)
             callback(result, exit_code)
+            self._start_next_queued_run()
             return
         if run_kind == "agent" and self._collection_review_callback:
             callback = self._collection_review_callback
             self._collection_review_callback = None
-            result = output.toPlainText() if output else ""
             self.current_run_kind = None
             self.current_agent_id = None
             self._write_git_diff()
             self._add_close_button(output)
             callback(result if exit_code == 0 else "")
+            self._start_next_queued_run()
             return
         if (
             run_kind == "agent"
@@ -1013,6 +1093,7 @@ class AgentConsolePanel(QWidget):
             self.current_agent_id = None
             self._write_git_diff()
             self._add_close_button(output)
+            self._start_next_queued_run()
             return
         if was_stopped:
             self._finish_after_autorun(output)
@@ -1038,6 +1119,7 @@ class AgentConsolePanel(QWidget):
         self.current_agent_id = None
         self._active_folder = None
         self._add_close_button(output)
+        self._start_next_queued_run()
 
     def _has_started_changes(self):
         folder = self._run_folder()
@@ -1158,9 +1240,9 @@ class AgentConsolePanel(QWidget):
                 return
         if not was_stopped:
             self._commit_autorun_changes()
-        self._finish_after_autorun(output)
         self.autorun_process = None
         self._autorun_output = None
+        self._finish_after_autorun(output)
 
     def _commit_autorun_changes(self):
         """Cierra Git sin pedirle al agente que haga commit."""

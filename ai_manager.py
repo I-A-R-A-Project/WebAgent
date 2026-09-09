@@ -363,13 +363,6 @@ class AIAgentsDialog(QDialog):
         layout.addWidget(git_box)
         self.agents_tabs = QTabWidget()
 
-        config_tab = QWidget()
-        config_layout = QVBoxLayout(config_tab)
-        self._build_repo_section(config_layout)
-        self._build_autorun_section(config_layout)
-        config_layout.addStretch()
-        self.agents_tabs.addTab(config_tab, "⚙ Config")
-
         for agent_id in AGENT_ORDER:
             tab = QWidget()
             self._build_agent_tab(tab, agent_id)
@@ -381,8 +374,6 @@ class AIAgentsDialog(QDialog):
         close_btn.clicked.connect(self.reject)
         layout.addWidget(close_btn)
  
-        self._refresh_repo_status()
-
     def _agent_environment(self, agent_id: str):
         if not self.profile_id:
             return None
@@ -987,8 +978,6 @@ class AIAgentsDialog(QDialog):
         self.pending_copilot_retry = False
         self.pending_copilot_login = False
         self.copilot_quota_detected = False
-        self._refresh_repo_status()
-
         # Autorun (opcional): ejecutar comando local configurado por carpeta
         cfg = self.config_store.get(self.folder)
         autorun = cfg.get("autorun", {})
@@ -1240,6 +1229,152 @@ class AIAgentsDialog(QDialog):
                 return
             self.process.kill()
         event.accept()
+
+
+class RepositoryConfigDialog(QDialog):
+    """Configura Git y autorun para un repositorio concreto."""
+
+    def __init__(self, parent, folder: str, repository_name: str = ""):
+        super().__init__(parent)
+        self.folder = str(Path(folder))
+        self.config_store = AgentConfigStore()
+        self.setWindowTitle(f"Configuración del repositorio — {repository_name or Path(folder).name}")
+        self.resize(620, 430)
+
+        layout = QVBoxLayout(self)
+        repo_box = QGroupBox("Repositorio")
+        repo_layout = QVBoxLayout(repo_box)
+        self.repo_status_label = QLabel()
+        self.repo_status_label.setWordWrap(True)
+        repo_layout.addWidget(self.repo_status_label)
+        repo_buttons = QHBoxLayout()
+        init_btn = QPushButton("Inicializar repositorio git aquí")
+        init_btn.clicked.connect(self._init_repo)
+        self.connect_remote_btn = QPushButton("Conectar repositorio remoto...")
+        self.connect_remote_btn.clicked.connect(self._connect_remote)
+        repo_buttons.addWidget(init_btn)
+        repo_buttons.addWidget(self.connect_remote_btn)
+        repo_layout.addLayout(repo_buttons)
+        layout.addWidget(repo_box)
+
+        autorun_box = QGroupBox("Autorun al terminar un agente")
+        form = QFormLayout(autorun_box)
+        autorun = self.config_store.get(self.folder).get("autorun", {})
+        self.autorun_enabled = QCheckBox("Ejecutar automáticamente")
+        self.autorun_enabled.setChecked(bool(autorun.get("enabled")))
+        self.autorun_command = QLineEdit(autorun.get("command", ""))
+        self.autorun_command.setPlaceholderText(
+            "Vacío: detectar checks por lenguaje; o Ej: npm test"
+        )
+        hint = QLabel(
+            "Los checks corren localmente y en secuencia. Solo los errores quedan "
+            "para revisión; Git puede cerrar los cambios automáticamente."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray; font-size: 11px;")
+        form.addRow(self.autorun_enabled)
+        form.addRow("Comando:", self.autorun_command)
+        form.addRow("", hint)
+        layout.addWidget(autorun_box)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._save)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._refresh_repo_status()
+
+    def _refresh_repo_status(self):
+        if not GitVersioning.has_repo(self.folder):
+            self.repo_status_label.setText(
+                "⚠ Esta carpeta todavía no es un repositorio git."
+            )
+            self.connect_remote_btn.setEnabled(False)
+            return
+        branch = GitVersioning.get_current_branch(self.folder) or "?"
+        if GitVersioning.has_remote(self.folder):
+            remote = GitVersioning.get_remote_url(self.folder)
+            self.repo_status_label.setText(
+                f"✅ Repo git en rama '{branch}'.\n🔗 Remoto: {remote}"
+            )
+            self.connect_remote_btn.setText("Cambiar repositorio remoto...")
+        else:
+            self.repo_status_label.setText(
+                f"✅ Repo git en rama '{branch}'.\n⚠ Sin remoto configurado."
+            )
+            self.connect_remote_btn.setText("Conectar repositorio remoto...")
+        self.connect_remote_btn.setEnabled(True)
+
+    def _init_repo(self):
+        GitVersioning.ensure_repo(self.folder)
+        if not GitVersioning.check_identity(self.folder):
+            QMessageBox.warning(
+                self,
+                "Falta identidad de git",
+                "Git no tiene user.name/user.email configurados. Configuralos con:\n\n"
+                'git config --global user.name "Tu Nombre"\n'
+                'git config --global user.email "tu@email.com"',
+            )
+        self._refresh_repo_status()
+
+    def _connect_remote(self):
+        current_url = (
+            GitVersioning.get_remote_url(self.folder)
+            if GitVersioning.has_remote(self.folder)
+            else ""
+        )
+        dialog = _ConnectRemoteDialog(self, default_url=current_url)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        url = dialog.get_url()
+        if not url:
+            return
+        if not GitVersioning.is_available():
+            QMessageBox.warning(self, "Git no encontrado", "No se encontró 'git' en el sistema.")
+            return
+        if not GitVersioning.has_repo(self.folder):
+            self._init_repo()
+        config = self.config_store.get(self.folder)
+        target_branch = config["target_branch"]
+        current_branch = GitVersioning.get_current_branch(self.folder)
+        if not GitVersioning.is_clean(self.folder) or not current_branch:
+            GitVersioning.run(self.folder, ["commit", "-m", "Commit inicial"])
+            current_branch = GitVersioning.get_current_branch(self.folder)
+        if current_branch and current_branch != target_branch:
+            GitVersioning.run(
+                self.folder, ["branch", "-m", current_branch, target_branch]
+            )
+        if GitVersioning.has_remote(self.folder):
+            GitVersioning.run(self.folder, ["remote", "remove", "origin"])
+        GitVersioning.run(self.folder, ["remote", "add", "origin", url])
+        ok, _, err = GitVersioning.run(
+            self.folder, ["push", "-u", "origin", target_branch], timeout=60
+        )
+        if ok:
+            QMessageBox.information(
+                self, "Repositorio conectado",
+                f"Remoto configurado y publicado en:\n{url}",
+            )
+        else:
+            QMessageBox.warning(
+                self, "Remoto conectado, pero el push falló",
+                f"El remoto quedó configurado en:\n{url}\n\npero el push automático falló:\n\n{err}",
+            )
+        self._refresh_repo_status()
+
+    def _save(self):
+        try:
+            self.config_store.set_autorun(
+                self.folder,
+                self.autorun_enabled.isChecked(),
+                self.autorun_command.text().strip(),
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Autorun inválido", str(exc))
+            return
+        self.accept()
 
 
 class _ConnectRemoteDialog(QDialog):
