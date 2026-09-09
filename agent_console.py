@@ -181,6 +181,7 @@ class AgentConsolePanel(QWidget):
         self._auth_warning_shown = set()
         self._highlighters = []
         self._collection_review_callback = None
+        self._agent_completion_callback = None
         self.setVisible(False)
 
         layout = QVBoxLayout(self)
@@ -197,10 +198,6 @@ class AgentConsolePanel(QWidget):
         self.run_btn = QPushButton("▶ Ejecutar")
         self.run_btn.clicked.connect(self.run_agent)
         buttons.addWidget(self.run_btn)
-        self.stop_btn = QPushButton("⏹ Detener")
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.clicked.connect(self.stop_agent)
-        buttons.addWidget(self.stop_btn)
         directory_row = QHBoxLayout()
         self.directory_combo = QComboBox()
         self.directory_combo.setToolTip(
@@ -268,18 +265,23 @@ class AgentConsolePanel(QWidget):
         return True
 
     def run_collection_review(
-        self, task_text: str, context_dir: str, readme_paths: str, callback
+        self, task_text: str, context_dir: str, summary_path: str, callback
     ):
-        """Pide a Copilot que relacione una tarea con las Colecciones existentes."""
-        if not self.select_directory(context_dir) or shutil.which("copilot") is None:
+        """Relaciona una tarea con Colecciones usando Gemini y luego Copilot."""
+        if not self.select_directory(context_dir):
             callback("")
             return
-        prompt = (
-            "Revisá la tarea siguiente contra la información y los README copiados "
-            "en este directorio de contexto. "
+        copilot_prompt = (
+            "Revisá la tarea siguiente contra el índice general de Colecciones "
+            "ubicado en este directorio de contexto. "
             "No modifiques ningún archivo ni ejecutes comandos. Determiná qué "
             "Colección existente contiene el repositorio o los repositorios que "
-            "la tarea quiere modificar. Leé cada README usando la ruta indicada. "
+            "la tarea quiere modificar. Usá primero el resumen de contenido y jerarquía; "
+            "considerá también la sección Tags de cada Colección como ayuda semántica; "
+            "si el índice no alcanza para decidir, leé los README individuales "
+            "disponibles en el subdirectorio 'readmes' de este contexto hasta "
+            "encontrar la Colección correcta; si sigue sin ser suficiente, leé "
+            "todos los README. "
             "Si la tarea menciona varios repositorios, elegí la Colección raíz "
             "que contiene sus carpetas, en lugar de crear una Colección nueva. "
             "Una tarea que pide actualizar, revisar o hacer commits en repositorios "
@@ -291,9 +293,52 @@ class AgentConsolePanel(QWidget):
             "Usá los IDs asociados a las rutas. Dejá "
             '"collection_ids":[] y proponé un nombre breve en create_name únicamente '
             "si la tarea realmente requiere un repositorio que no existe en la lista.\n\n"
-            f"TAREA:\n{task_text}\n\nRUTAS README DE COLECCIONES:\n{readme_paths}"
+            f"TAREA:\n{task_text}\n\nÍNDICE GENERAL:\n{summary_path}"
         )
         self._collection_review_callback = callback
+        profile_id = self._profile_id()
+        gemini_key = self.config_store.get_profile_agent_token(
+            context_dir, profile_id, "gemini"
+        )
+        if gemini_key:
+            try:
+                summary = Path(summary_path).read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                summary = ""
+            gemini_prompt = (
+                "Clasificá la tarea contra el índice de Colecciones incluido abajo. "
+                "Usá especialmente los Tags, README, jerarquía, carpetas y marcadores "
+                "como evidencia; compará todas las Colecciones antes de decidir. "
+                "No modifiques archivos. Respondé al final con una única línea "
+                'exactamente en este formato JSON: WEBAGENT_COLLECTION_RESULT: '
+                '{"collection_ids":["id"],"create_name":null}. '
+                "Elegí una Colección existente si la tarea se refiere a un proyecto "
+                "o repositorio ya presente. Si la tarea describe una parte de un "
+                "proyecto existente, elegí ese proyecto aunque no nombre la Colección "
+                "literalmente. Sólo devolvé collection_ids vacío si ninguna Colección "
+                "es compatible.\n\n"
+                f"TAREA:\n{task_text}\n\nÍNDICE:\n{summary}"
+            )
+            self.task_edit.setPlainText(f"gemini {gemini_prompt}")
+            self.setVisible(True)
+            def finish_gemini_review(output, exit_code):
+                if exit_code == 0 and output.strip():
+                    self._collection_review_callback = None
+                    callback(output)
+                else:
+                    self._run_collection_review_with_copilot(
+                        copilot_prompt, callback
+                    )
+
+            self.run_agent(finish_gemini_review)
+            return
+        self._run_collection_review_with_copilot(copilot_prompt, callback)
+
+    def _run_collection_review_with_copilot(self, prompt: str, callback):
+        if shutil.which("copilot") is None:
+            self._collection_review_callback = None
+            callback("")
+            return
         self.task_edit.setPlainText(f"copilot {prompt}")
         self.setVisible(True)
         self.run_agent()
@@ -324,7 +369,7 @@ class AgentConsolePanel(QWidget):
         self.current_run_kind = "help"
         self._active_folder = folder
         self._start_log(agent_id, folder, command, command)
-        self._new_tab(agent_id, f"$ {command}\n\n")
+        self._new_tab(agent_id, "\n", prompt=f"$ {command}")
         self.process = QProcess(self)
         self.processes.add(self.process)
         self._process_outputs[self.process] = self.current_output
@@ -343,7 +388,6 @@ class AgentConsolePanel(QWidget):
             self.process.start(program, arguments)
         self.setVisible(True)
         self.run_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
 
     def _start_log(self, agent_id: str, folder: str, command: str, task: str):
         log_dir = IA_DATA_DIR / "agent_logs"
@@ -438,10 +482,12 @@ class AgentConsolePanel(QWidget):
             environment.insert("GROQ_API_KEY", token)
         return environment
 
-    def run_agent(self):
+    def run_agent(self, completion_callback=None):
         raw_task = self.task_edit.toPlainText().strip()
         if not raw_task:
             return
+        if completion_callback is not None:
+            self._agent_completion_callback = completion_callback
         self._refresh_directory_options()
         if not self._working_folder():
             self._new_tab(
@@ -521,7 +567,11 @@ class AgentConsolePanel(QWidget):
                 for token in tokens
             ]
         self._start_log(agent_id, folder, " ".join(argv), task)
-        self._new_tab(agent_id, f"$ {' '.join(argv)}\n\n")
+        self._new_tab(
+            agent_id,
+            "\n",
+            prompt=f"$ {' '.join(argv)}\n\nPrompt: {task}",
+        )
         self.current_run_kind = "agent"
         self._active_folder = folder
         self.process = QProcess(self)
@@ -542,7 +592,7 @@ class AgentConsolePanel(QWidget):
             self.process.start(argv[0], argv[1:])
         self.setVisible(True)
         self.run_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self.task_edit.clear()
 
     def _copilot_usage_is_at_limit(self):
         """Selecciona otro perfil antes de iniciar Copilot si el uso es alto."""
@@ -581,7 +631,7 @@ class AgentConsolePanel(QWidget):
         self.current_run_kind = "command"
         self._active_folder = folder
         self._start_log("command", folder, command, command)
-        self._new_tab("command", f"$ {command}\n\n")
+        self._new_tab("command", "\n", prompt=f"$ {command}")
         self.process = QProcess(self)
         self.processes.add(self.process)
         self._process_outputs[self.process] = self.current_output
@@ -610,15 +660,31 @@ class AgentConsolePanel(QWidget):
             self.process.start(tokens[0], tokens[1:])
         self.setVisible(True)
         self.run_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self.task_edit.clear()
 
-    def _new_tab(self, agent_id, initial="", finished=False):
+    def _new_tab(self, agent_id, initial="", finished=False, prompt=""):
         self.current_output = QPlainTextEdit()
         self.current_output.setReadOnly(True)
         self.current_output.setFont(QFont("Consolas", 10))
         apply_console_style(self.current_output)
         self._highlighters.append(ConsoleHighlighter(self.current_output.document()))
         self.current_output.setPlainText(initial)
+        header = QLabel(prompt)
+        header.setWordWrap(True)
+        header.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        header.setStyleSheet(
+            f"background-color: {CONSOLE_BG}; color: #e2a63b; "
+            f"border: 1px solid {CONSOLE_BORDER}; padding: 6px;"
+        )
+        tab_content = QWidget()
+        tab_layout = QVBoxLayout(tab_content)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        if prompt:
+            tab_layout.addWidget(header)
+        tab_layout.addWidget(self.current_output, 1)
         label = AGENT_DEFS.get(agent_id, {}).get("short_label", "Comando")
         if agent_id == "copilot":
             profile_id = self._profile_id()
@@ -630,13 +696,13 @@ class AgentConsolePanel(QWidget):
             label = f"{label} · {profile_name}"
         else:
             label = f"{label}"
-        index = self.tabs.addTab(self.current_output, label)
+        index = self.tabs.addTab(tab_content, label)
         self.tabs.setCurrentIndex(index)
         self._add_close_button(self.current_output, enabled=True)
 
     def _add_close_button(self, output, enabled=True):
         """Crea el botón de cierre y controla cuándo puede usarse."""
-        index = self.tabs.indexOf(output)
+        index = self._tab_index_for_output(output)
         if index < 0:
             return
         close_btn = self.tabs.tabBar().tabButton(index, QTabBar.ButtonPosition.RightSide)
@@ -650,8 +716,20 @@ class AgentConsolePanel(QWidget):
             None,
         )
 
-    def _close_output_tab(self, output):
-        index = self.tabs.indexOf(output)
+    def _tab_content_for_output(self, output):
+        if output is None:
+            return None
+        return output.parentWidget()
+
+    def _tab_index_for_output(self, output):
+        return self.tabs.indexOf(self._tab_content_for_output(output))
+
+    def _output_for_tab_content(self, tab_content):
+        return tab_content.findChild(QPlainTextEdit) if tab_content else None
+
+    def _close_output_tab(self, tab_content):
+        output = self._output_for_tab_content(tab_content)
+        index = self.tabs.indexOf(tab_content)
         if index < 0:
             return
         process = self._process_for_output(output)
@@ -866,16 +944,6 @@ class AgentConsolePanel(QWidget):
                 code_match.group(1) if code_match else "",
             )
 
-    def stop_agent(self):
-        for process in list(self.processes):
-            self._stopping_processes.add(process)
-            process.kill()
-        if self.copilot_login_process:
-            self.copilot_login_process.kill()
-        if self.autorun_process:
-            self._stopping_processes.add(self.autorun_process)
-            self.autorun_process.kill()
-
     def _finished(self, exit_code, _status):
         process = self.sender()
         output = self._process_outputs.pop(process, None)
@@ -895,7 +963,16 @@ class AgentConsolePanel(QWidget):
         self._write_log(f"\n--- terminó (código {exit_code}) ---\n")
         run_kind = self.current_run_kind
         self.run_btn.setEnabled(True)
-        self.stop_btn.setEnabled(self.has_running_processes())
+        if run_kind == "agent" and self._agent_completion_callback:
+            callback = self._agent_completion_callback
+            self._agent_completion_callback = None
+            result = output.toPlainText() if output else ""
+            self.current_run_kind = None
+            self.current_agent_id = None
+            self._write_git_diff()
+            self._add_close_button(output)
+            callback(result, exit_code)
+            return
         if run_kind == "agent" and self._collection_review_callback:
             callback = self._collection_review_callback
             self._collection_review_callback = None
@@ -1084,7 +1161,6 @@ class AgentConsolePanel(QWidget):
         self._finish_after_autorun(output)
         self.autorun_process = None
         self._autorun_output = None
-        self.stop_btn.setEnabled(self.has_running_processes())
 
     def _commit_autorun_changes(self):
         """Cierra Git sin pedirle al agente que haga commit."""

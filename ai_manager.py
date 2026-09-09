@@ -73,9 +73,9 @@ AGENT_DEFS = {
         "install_hint": "npm install -g @openai/codex   y luego  codex login",
     },
     "copilot": {
-        "label": "🤖 Copilot — Agente principal",
+        "label": "🤖 Copilot — Ejecutor principal",
         "short_label": "Copilot",
-        "description": "Agente AI principal: puede leer y modificar código y documentación, generar commits atómicos y ejecutar verificaciones de proyecto.",
+        "description": "Ejecutor AI: puede leer y modificar código y documentación, generar commits atómicos y ejecutar verificaciones de proyecto.",
         "default_command": (
             'copilot -p "{prompt}" --allow-all-tools '
             "--allow-all-paths --allow-all-urls"
@@ -111,7 +111,7 @@ AGENT_DEFS = {
 
 }
 
-AGENT_ORDER = ["copilot", "codex", "gemini", "groq"]
+AGENT_ORDER = ["gemini", "copilot", "codex", "groq"]
 
 # Comandos por defecto de versiones anteriores que ya no aplican (se
 # migran solos al default actual si el usuario nunca los tocó a mano).

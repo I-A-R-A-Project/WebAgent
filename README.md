@@ -142,6 +142,25 @@ El servidor `ast-grep-mcp` también puede configurarse en un cliente MCP para
 que un agente visualice AST y pruebe reglas estructurales. WebAgent no lo
 inicia automáticamente.
 
+### Grabar una ventana
+
+En Windows se puede grabar una ventana visible con FFmpeg usando el script
+incluido. El script usa `ffmpeg.exe` de la raíz del proyecto si está
+disponible, o un ejecutable encontrado en `PATH`:
+
+```bash
+python scripts/record_window.py
+```
+
+Por defecto busca la ventana cuyo título es `WebAgent`, guarda el vídeo en
+`recordings/window_YYYYMMDD_HHMMSS.mp4` y continúa hasta pulsar `Ctrl+C`.
+También permite seleccionar otra ventana y limitar la duración:
+
+```bash
+python scripts/record_window.py --title "Calculadora" --duration 30 --output captura.mp4
+python scripts/record_window.py --list-windows
+```
+
 ## Instalación y ejecución
 
 Requiere Python, PyQt6 y PyQt6-WebEngine:
@@ -171,10 +190,11 @@ WebAgent/
 ```
 
 Cada pestaña nueva incluye búsqueda de Google y una bandeja local de tareas.
-Las tareas se guardan por perfil; si existe `GEMINI_API_KEY`, Gemini intenta
-asociarlas con una Colección y cada tarea ofrece un enlace explícito para
-abrirla en Copilot. Las tareas sin coincidencia preguntan antes de crear una
-Colección nueva.
+Las tareas de la bandeja se guardan por perfil. Cada tarea se relaciona con una
+Colección mediante Gemini, usando el índice, los Tags, los README y la jerarquía;
+Copilot queda como respaldo si Gemini no está disponible. Sólo se crea una
+Colección nueva cuando ninguno de los dos agentes identifica una Colección
+existente.
 
 ### Website Tools
 
@@ -239,6 +259,22 @@ También podés abrir **Vista → Website Tools...** desde la interfaz. El diál
 precompleta la URL de la pestaña actual, permite elegir el tipo de operación,
 limitar profundidad y páginas, muestra el informe dentro de WebAgent y
 permite guardar el crawl en JSON.
+
+### Catálogo de literatura
+
+El catálogo inicial de libros, fanfiction y novelas serializadas está en
+`literature_sources.json`. Incluye fuentes legales o abiertas y distingue
+entre lectura y descarga permitida. El plan para conectarlo a una sección de
+la interfaz está en `literature_plan.md`.
+
+Validación offline:
+
+```bash
+python scripts/test_literature_catalog.py
+```
+
+La comprobación opcional `--online` verifica que las URLs sigan respondiendo;
+no descarga contenido ni es necesaria para iniciar WebAgent.
 
 ## Datos persistentes
 

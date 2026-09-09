@@ -15,6 +15,7 @@ main.py — ya no como una ventana modal aparte.
 """
 
 import json
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -44,6 +45,7 @@ class CollectionManager:
         self.base_dir = IA_DATA_DIR
         self.base_dir.mkdir(exist_ok=True)
         self.collections_file = self.base_dir / "collections.json"
+        self.collections_summary_file = self.base_dir / "collections_summary.md"
         self.load_collections()
 
     def load_collections(self):
@@ -99,11 +101,143 @@ class CollectionManager:
     def save_collections(self):
         with open(self.collections_file, "w") as f:
             json.dump(self.collections, f, indent=2)
+        self.write_collections_summary()
+
+    @staticmethod
+    def _readme_summary(readme: Path) -> str:
+        """Extrae una síntesis breve formada únicamente por frases completas."""
+        try:
+            lines = [
+                line.strip()
+                for line in readme.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        except (OSError, UnicodeError):
+            return "README no disponible."
+        if not lines:
+            return "Sin descripción en el README."
+        headings = [line.lstrip("# ").strip() for line in lines if line.startswith("#")]
+        prose = [
+            line for line in lines
+            if not line.startswith("#") and not line.startswith(("-", "*", ">"))
+        ]
+        parts = []
+        if headings:
+            parts.append("Secciones: " + " · ".join(headings[:4]))
+        if prose:
+            prose_text = " ".join(prose)
+            sentences = re.findall(r"[^.!?…]+[.!?…]+", prose_text)
+            if sentences:
+                parts.append(" ".join(sentences[:2]).strip())
+        return " ".join(parts) or "README sin resumen textual."
+
+    @staticmethod
+    def _collection_tags(collection: dict, readme: Path | None) -> list[str]:
+        """Obtiene etiquetas generales para ayudar a clasificar la Colección."""
+        sources = [str(collection.get("name", ""))]
+        download_dir = str(collection.get("download_dir", ""))
+        if download_dir:
+            sources.extend(Path(download_dir).parts[-3:])
+        if readme:
+            try:
+                sources.append(readme.read_text(encoding="utf-8")[:12000])
+            except (OSError, UnicodeError):
+                pass
+        for item in collection.get("items", []):
+            sources.extend([str(item.get("title", "")), str(item.get("url", ""))])
+
+        stop_words = {
+            "the", "and", "for", "with", "from", "this", "that", "una", "uno",
+            "para", "con", "desde", "sobre", "esta", "este", "los", "las",
+            "del", "por", "que", "una", "como", "más", "www", "https", "http",
+            "com", "org", "github", "readme", "repository", "repositorio",
+        }
+        tags = []
+        for source in sources:
+            for tag in re.findall(r"[a-z0-9áéíóúüñ][a-z0-9áéíóúüñ_-]{2,}", source.casefold()):
+                tag = tag.strip("_-")
+                if tag and tag not in stop_words and tag not in tags:
+                    tags.append(tag)
+        return tags[:16]
+
+    def write_collections_summary(self) -> Path:
+        """Escribe el índice general de contenido y jerarquía de Colecciones."""
+        by_parent = {}
+        for collection in self.collections:
+            by_parent.setdefault(collection.get("parent_id"), []).append(collection)
+        for children in by_parent.values():
+            children.sort(key=lambda item: item.get("name", "").casefold())
+
+        lines = [
+            "# Índice general de Colecciones",
+            "",
+            "Este archivo es un sumario conciso. Si no alcanza para identificar "
+            "una Colección, leé los README individuales antes de decidir.",
+            "",
+            "## Jerarquía",
+            "",
+        ]
+
+        def add_tree(collection, level=0, visited=None):
+            visited = set() if visited is None else visited
+            if collection["id"] in visited:
+                lines.append(f'{"  " * level}- {collection.get("name", "Sin nombre")} (jerarquía cíclica)')
+                return
+            visited = visited | {collection["id"]}
+            lines.append(
+                f'{"  " * level}- **{collection.get("name", "Sin nombre")}** '
+                f'(`[id: {collection["id"]}]`)'
+            )
+            for child in by_parent.get(collection["id"], []):
+                add_tree(child, level + 1, visited)
+
+        roots = by_parent.get(None, []) + [
+            collection for collection in self.collections
+            if collection.get("parent_id") and not self.get_collection(collection["parent_id"])
+        ]
+        for collection in roots:
+            add_tree(collection)
+        if not self.collections:
+            lines.append("No hay Colecciones registradas.")
+
+        lines.extend(["", "## Contenido por Colección", ""])
+        for collection in sorted(
+            self.collections, key=lambda item: item.get("name", "").casefold()
+        ):
+            download_dir = collection.get("download_dir", "")
+            readme = Path(download_dir) / "README.md" if download_dir else None
+            parent = self.get_collection(collection.get("parent_id"))
+            lines.extend([
+                f'### {collection.get("name", "Sin nombre")} (`{collection["id"]}`)',
+                f"- **Jerarquía:** {parent.get('name') if parent else 'raíz'}",
+                f"- **Carpeta:** `{download_dir or "sin carpeta"}`",
+                f"- **README:** {self._readme_summary(readme) if readme else "no disponible"}",
+                f"- **Tags:** {', '.join(self._collection_tags(collection, readme)) or 'sin tags'}",
+            ])
+            items = collection.get("items", [])
+            if items:
+                lines.append("- **Marcadores:**")
+                lines.extend(
+                    f'  - {item.get("title") or item.get("url", "Sin título")}: '
+                    f'{item.get("url", "")}'
+                    for item in items
+                )
+            else:
+                lines.append("- **Marcadores:** ninguno")
+            lines.append("")
+
+        self.collections_summary_file.write_text(
+            "\n".join(lines).rstrip() + "\n",
+            encoding="utf-8",
+        )
+        return self.collections_summary_file
 
     def prepare_task_agent_context(self) -> Path:
         """Prepara los datos aislados que necesita el agente de nuevas tareas."""
         context_dir = TASK_AGENT_CONTEXT_DIR
         context_dir.mkdir(parents=True, exist_ok=True)
+        summary_source = self.write_collections_summary()
+        shutil.copyfile(summary_source, context_dir / "collections_summary.md")
         readmes_dir = context_dir / "readmes"
         readmes_dir.mkdir(parents=True, exist_ok=True)
 
@@ -127,6 +261,7 @@ class CollectionManager:
                 "name": collection.get("name", ""),
                 "download_dir": collection.get("download_dir", ""),
                 "readme": str(readme_copy.resolve()),
+                "parent_id": collection.get("parent_id"),
                 "items": collection.get("items", []),
             })
 
@@ -281,6 +416,10 @@ class CollectionManager:
             collection for collection in self.collections
             if collection["id"] != collection_id
         ]
+        for collection in self.collections:
+            if collection.get("parent_id") == collection_id:
+                collection["parent_id"] = None
+        self._sync_parents_from_folders()
         self.save_collections()
 
     def sidebar_entries(self, profile_names: dict[str, str]) -> list[dict]:
