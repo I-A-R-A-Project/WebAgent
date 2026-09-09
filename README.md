@@ -151,7 +151,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Los imports son locales; ejecutar `python main.py` desde la carpeta `IA`.
+Los imports son locales; ejecutar `python main.py` desde la carpeta `WebAgent`.
 
 ## Archivos y módulos principales
 
@@ -252,7 +252,14 @@ session.json                  # Pestañas restaurables
 copilot_profiles/<id>/        # Estado de Copilot por perfil
 profiles/<id>/storage/        # Cookies y almacenamiento Chromium
 profiles/<id>/cache/          # Cache Chromium
+task_agent_context/           # Datos y copias de README para "Agregar tarea"
 ```
 
 No incluir estas carpetas en commits públicos si contienen sesiones,
 credenciales, cookies o datos personales.
+
+Al usar **Agregar tarea**, WebAgent actualiza `task_agent_context/` con un
+`collections.json` y copias de los README de cada Colección. Copilot se
+ejecuta desde ese directorio para clasificar la tarea con acceso explícito a
+la información de las Colecciones, y luego se mueve a la carpeta de la
+Colección elegida para realizar el trabajo.
