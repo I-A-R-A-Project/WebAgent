@@ -157,7 +157,9 @@ class AgentConsolePanel(QWidget):
         self.auth_success_handler = auth_success_handler
         self.process = None
         self.processes = set()
+        self._stopping_processes = set()
         self._process_outputs = {}
+        self._active_folder = None
         self.current_agent_id = None
         self.current_run_kind = None
         self.copilot_login_process = None
@@ -218,8 +220,19 @@ class AgentConsolePanel(QWidget):
         )
         layout.addWidget(self.tabs, 1)
 
+    def has_running_processes(self) -> bool:
+        """Indica si queda algún proceso de agente, login o verificación activo."""
+        return bool(
+            self.processes
+            or self.autorun_process is not None
+            or self.copilot_login_process is not None
+        )
+
     def _working_folder(self) -> str:
         return str(self.directory_combo.currentData() or "")
+
+    def _run_folder(self) -> str:
+        return self._active_folder or self._working_folder()
 
     def _profile_id(self):
         return self._profile_override or self.profile_getter()
@@ -309,6 +322,7 @@ class AgentConsolePanel(QWidget):
 
         self.current_agent_id = agent_id
         self.current_run_kind = "help"
+        self._active_folder = folder
         self._start_log(agent_id, folder, command, command)
         self._new_tab(agent_id, f"$ {command}\n\n")
         self.process = QProcess(self)
@@ -359,7 +373,7 @@ class AgentConsolePanel(QWidget):
 
     def _write_git_diff(self):
         """Guarda en el log el diff exacto producido por la ejecución."""
-        folder = self._working_folder()
+        folder = self._run_folder()
         if not GitVersioning.has_repo(folder):
             return
 
@@ -500,6 +514,7 @@ class AgentConsolePanel(QWidget):
         self._start_log(agent_id, folder, " ".join(argv), task)
         self._new_tab(agent_id, f"$ {' '.join(argv)}\n\n")
         self.current_run_kind = "agent"
+        self._active_folder = folder
         self.process = QProcess(self)
         self.processes.add(self.process)
         self._process_outputs[self.process] = self.current_output
@@ -555,6 +570,7 @@ class AgentConsolePanel(QWidget):
 
         self.current_agent_id = None
         self.current_run_kind = "command"
+        self._active_folder = folder
         self._start_log("command", folder, command, command)
         self._new_tab("command", f"$ {command}\n\n")
         self.process = QProcess(self)
@@ -607,7 +623,7 @@ class AgentConsolePanel(QWidget):
             label = f"{label}"
         index = self.tabs.addTab(self.current_output, label)
         self.tabs.setCurrentIndex(index)
-        self._add_close_button(self.current_output, enabled=finished)
+        self._add_close_button(self.current_output, enabled=True)
 
     def _add_close_button(self, output, enabled=True):
         """Crea el botón de cierre y controla cuándo puede usarse."""
@@ -618,9 +634,26 @@ class AgentConsolePanel(QWidget):
         if close_btn is not None:
             close_btn.setEnabled(enabled)
 
+    def _process_for_output(self, output):
+        return next(
+            (process for process, process_output in self._process_outputs.items()
+             if process_output is output),
+            None,
+        )
+
     def _close_output_tab(self, output):
         index = self.tabs.indexOf(output)
         if index < 0:
+            return
+        process = self._process_for_output(output)
+        if process is not None:
+            process.kill()
+            return
+        if self.autorun_process is not None and self._autorun_output is output:
+            self.autorun_process.kill()
+            return
+        if self.copilot_login_process is not None and output is self.current_output:
+            self.copilot_login_process.kill()
             return
         self.tabs.removeTab(index)
         output.deleteLater()
@@ -768,14 +801,20 @@ class AgentConsolePanel(QWidget):
 
     def stop_agent(self):
         for process in list(self.processes):
+            self._stopping_processes.add(process)
             process.kill()
         if self.copilot_login_process:
             self.copilot_login_process.kill()
+        if self.autorun_process:
+            self._stopping_processes.add(self.autorun_process)
+            self.autorun_process.kill()
 
     def _finished(self, exit_code, _status):
         process = self.sender()
         output = self._process_outputs.pop(process, None)
         self.processes.discard(process)
+        was_stopped = process in self._stopping_processes
+        self._stopping_processes.discard(process)
         if process is self.process:
             self.process = None
         if process and output:
@@ -789,7 +828,7 @@ class AgentConsolePanel(QWidget):
         self._write_log(f"\n--- terminó (código {exit_code}) ---\n")
         run_kind = self.current_run_kind
         self.run_btn.setEnabled(True)
-        self.stop_btn.setEnabled(bool(self.processes))
+        self.stop_btn.setEnabled(self.has_running_processes())
         if run_kind == "agent" and self._collection_review_callback:
             callback = self._collection_review_callback
             self._collection_review_callback = None
@@ -831,12 +870,15 @@ class AgentConsolePanel(QWidget):
             self._write_git_diff()
             self._add_close_button(output)
             return
-        config = AgentConfigStore().get(self._working_folder())
+        if was_stopped:
+            self._finish_after_autorun(output)
+            return
+        config = AgentConfigStore().get(self._run_folder())
         autorun = config.get("autorun", {})
         if autorun.get("enabled"):
             command = autorun.get("command", "").strip()
             commands = [command] if command else (
-                build_autorun_plan(self._working_folder())
+                build_autorun_plan(self._run_folder())
                 if autorun.get("auto_detect", True) else []
             )
             self._autorun_auto_commit = bool(autorun.get("auto_commit", True))
@@ -850,10 +892,11 @@ class AgentConsolePanel(QWidget):
         self._write_git_diff()
         self.current_run_kind = None
         self.current_agent_id = None
+        self._active_folder = None
         self._add_close_button(output)
 
     def _has_started_changes(self):
-        folder = self._working_folder()
+        folder = self._run_folder()
         if not GitVersioning.has_repo(folder):
             return False
         status = GitVersioning.run(folder, ["status", "--short"], timeout=10)
@@ -920,7 +963,7 @@ class AgentConsolePanel(QWidget):
         self._write_log(f"\n--- autorun: {command} ---\n")
         process = QProcess(self)
         self.autorun_process = process
-        process.setWorkingDirectory(self._working_folder())
+        process.setWorkingDirectory(self._run_folder())
         process.setProcessEnvironment(self._environment(self.current_agent_id))
         process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         process.readyReadStandardOutput.connect(self._read_autorun_output)
@@ -945,12 +988,17 @@ class AgentConsolePanel(QWidget):
     def _autorun_finished(self, exit_code, _status):
         self._read_autorun_output()
         output = self._autorun_output
+        process = self.autorun_process
+        was_stopped = process in self._stopping_processes
+        self._stopping_processes.discard(process)
         if output:
             output.appendPlainText(
                 f"\n--- autorun terminó (código {exit_code}) ---"
             )
         self._write_log(f"\n--- check terminó (código {exit_code}) ---\n")
-        if exit_code != 0:
+        if was_stopped:
+            self._autorun_queue.clear()
+        elif exit_code != 0:
             self._autorun_failures.append(
                 "El check falló; revisar la salida anterior antes de pedir ayuda al agente."
             )
@@ -964,14 +1012,16 @@ class AgentConsolePanel(QWidget):
         else:
             if self._start_next_autorun():
                 return
-        self._commit_autorun_changes()
+        if not was_stopped:
+            self._commit_autorun_changes()
         self._finish_after_autorun(output)
         self.autorun_process = None
         self._autorun_output = None
+        self.stop_btn.setEnabled(self.has_running_processes())
 
     def _commit_autorun_changes(self):
         """Cierra Git sin pedirle al agente que haga commit."""
-        folder = self._working_folder()
+        folder = self._run_folder()
         if (
             not self._autorun_auto_commit
             or not GitVersioning.has_repo(folder)

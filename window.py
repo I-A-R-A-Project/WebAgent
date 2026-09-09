@@ -98,6 +98,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         self._download_dialogs = []
         self._agent_dialogs = []
         self._devtools_windows = []
+        self._closing_wait_for_agents = False
 
         self._setup_ui()
         self._setup_status_bar()
@@ -1181,12 +1182,27 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         )
 
     def closeEvent(self, event):
+        if self.agent_console.has_running_processes():
+            event.ignore()
+            if not self._closing_wait_for_agents:
+                self._closing_wait_for_agents = True
+                self.statusBar().showMessage(
+                    "Esperando a que terminen las consolas de agentes..."
+                )
+                QTimer.singleShot(100, self._close_after_agents_finish)
+            return
         self._save_session()
         # El último uso válido ya está en profiles.json; guardarlo de nuevo
         # aquí asegura que quede persistido antes de cerrar el proceso.
         self.profile_manager.save_profiles()
         self.collection_manager.save_collections()
         event.accept()
+
+    def _close_after_agents_finish(self):
+        if self.agent_console.has_running_processes():
+            QTimer.singleShot(100, self._close_after_agents_finish)
+            return
+        self.close()
 
     # ------------------------------------------------------------------
     # Sesión: recordar las últimas pestañas abiertas
