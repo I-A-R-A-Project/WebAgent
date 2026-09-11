@@ -276,21 +276,26 @@ La dependencia `websocket-client` es necesaria para la conexión CDP:
 pip install -r requirements.txt
 ```
 
-### Catálogo de literatura
+### Archivar tweets de una response
 
-El catálogo inicial de libros, fanfiction y novelas serializadas está en
-`literature_sources.json`. Incluye fuentes legales o abiertas y distingue
-entre lectura y descarga permitida. El plan para conectarlo a una sección de
-la interfaz está en `literature_plan.md`.
-
-Validación offline:
+El script `scripts/twitter_archive.py` convierte una response JSON de la
+timeline de X/Twitter en datos pequeños y una página local con búsqueda,
+filtro por autor, métricas, medios y enlaces originales:
 
 ```bash
-python scripts/test_literature_catalog.py
+python scripts/twitter_archive.py test/responses_content/response-000155.json
 ```
 
-La comprobación opcional `--online` verifica que las URLs sigan respondiendo;
-no descarga contenido ni es necesaria para iniciar WebAgent.
+También puede procesar todas las responses JSON de una carpeta y combinar los
+tweets sin duplicarlos:
+
+```bash
+python scripts/twitter_archive.py test/responses_content --output twitter_archive
+```
+
+Abrí `twitter_archive/index.html` en el navegador. Las imágenes se muestran
+desde sus URLs originales de X; si una URL deja de estar disponible, el texto
+y los metadatos siguen guardados en `tweets.json`.
 
 ## Datos persistentes
 
