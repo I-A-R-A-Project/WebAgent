@@ -78,7 +78,7 @@ AGENT_DEFS = {
         "description": "Ejecutor AI: puede leer y modificar código y documentación, generar commits atómicos y ejecutar verificaciones de proyecto.",
         "default_command": (
             'copilot -p "{prompt}" --allow-all-tools '
-            "--allow-all-paths --allow-all-urls"
+            "--allow-all-urls"
         ),
         "needs_task": False,
         "needs_source_branch": True,
@@ -116,7 +116,13 @@ AGENT_ORDER = ["gemini", "copilot", "codex", "groq"]
 # Comandos por defecto de versiones anteriores que ya no aplican (se
 # migran solos al default actual si el usuario nunca los tocó a mano).
 LEGACY_DEFAULT_COMMANDS = {
-    "copilot": ['copilot -p "{prompt}" --allow-all --no-ask-user'],
+    "copilot": [
+        'copilot -p "{prompt}" --allow-all --no-ask-user',
+        (
+            'copilot -p "{prompt}" --allow-all-tools '
+            "--allow-all-paths --allow-all-urls"
+        ),
+    ],
 }
 
 

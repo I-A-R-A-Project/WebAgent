@@ -193,7 +193,7 @@ class AgentConsolePanel(QWidget):
         self.task_edit.setFixedHeight(76)
         self.task_edit.setPlaceholderText(
             "copilot/codex/gemini/groq seguido de la tarea, o un comando de terminal... "
-            "(Shift+Enter para ejecutar)"
+            "(-continue copilot para retomar la pestaña activa; Shift+Enter para ejecutar)"
         )
         apply_console_style(self.task_edit)
         controls.addWidget(self.task_edit, 1)
@@ -537,7 +537,6 @@ class AgentConsolePanel(QWidget):
             "GEMINI_API_KEY", "GROQ_API_KEY",
         ):
             environment.remove(name)
-        environment.insert("COPILOT_ALLOW_ALL", "1")
         environment.insert("COPILOT_HOME", str(COPILOT_PROFILES_DIR / profile_id))
         environment.insert("BROWSER", "cmd.exe /c exit 0")
         token = self.config_store.get_profile_agent_token(
@@ -578,10 +577,30 @@ class AgentConsolePanel(QWidget):
         else:
             self._profile_override = None
             task = parts[1].strip() if len(parts) > 1 else ""
+        continue_requested = False
+        if parts[0].lower() in ("-continue", "--continue"):
+            continue_requested = True
+            continuation_parts = task.split(None, 1)
+            if not continuation_parts:
+                self._new_tab(
+                    "copilot",
+                    "Indicá «-continue copilot» y, opcionalmente, la nueva tarea.",
+                    finished=True,
+                )
+                return
+            agent_id = continuation_parts[0].lower().rstrip(":")
+            task = continuation_parts[1].strip() if len(continuation_parts) > 1 else ""
+            if agent_id != "copilot":
+                self._new_tab(
+                    agent_id,
+                    "La opción «-continue» sólo está disponible para Copilot.",
+                    finished=True,
+                )
+                return
         if agent_id not in AGENT_DEFS:
             self._run_command(raw_task)
             return
-        if not task:
+        if not task and not continue_requested:
             self._new_tab(
                 agent_id,
                 f"Falta la tarea después de «{parts[0]}».",
@@ -610,6 +629,16 @@ class AgentConsolePanel(QWidget):
         config = AgentConfigStore().get(folder)
         command = config["agents"][agent_id].get("command", AGENT_DEFS[agent_id]["default_command"])
         prompt = task
+        resume_id = None
+        if continue_requested:
+            resume_id = self._resume_id_from_current_tab()
+            if not resume_id:
+                self._new_tab(
+                    agent_id,
+                    "La pestaña de consola abierta no contiene un resume de Copilot.",
+                    finished=True,
+                )
+                return
         try:
             tokens = shlex.split(command)
         except ValueError as exc:
@@ -617,12 +646,36 @@ class AgentConsolePanel(QWidget):
             return
         script_dir = str(Path(__file__).resolve().parent)
         argv = [token.replace("{prompt}", prompt).replace("{script_dir}", script_dir) for token in tokens]
+        if agent_id == "copilot":
+            # Nunca conservar permisos globales aunque hayan quedado guardados
+            # en un comando personalizado o en una configuración antigua.
+            argv = [
+                token for token in argv
+                if token not in ("--allow-all-paths", "--allow-all")
+            ]
+            if continue_requested:
+                argv.extend([f"--resume={resume_id}"])
+                if not task:
+                    for index in range(len(argv) - 1, 0, -1):
+                        if argv[index] == "" and argv[index - 1] in ("-p", "--prompt"):
+                            del argv[index - 1:index + 1]
+                            break
+            argv.extend(
+                argument
+                for folder_path in self._collection_directories_for_copilot()
+                for argument in ("--add-dir", folder_path)
+            )
         if retrying_copilot:
             prompt = self._copilot_fallback_prompt()
             argv = [
                 "copilot", "-p", prompt, "--allow-all-tools",
-                "--allow-all-paths", "--allow-all-urls",
+                "--allow-all-urls",
             ]
+            argv.extend(
+                argument
+                for folder_path in self._collection_directories_for_copilot()
+                for argument in ("--add-dir", folder_path)
+            )
             self._copilot_quota_detected = False
         if not argv or shutil.which(argv[0]) is None:
             self._new_tab(
@@ -665,6 +718,33 @@ class AgentConsolePanel(QWidget):
             self.process.start(argv[0], argv[1:])
         self.setVisible(True)
         self.task_edit.clear()
+
+    def _collection_directories_for_copilot(self) -> list[str]:
+        """Devuelve rutas existentes de Colecciones para ``copilot --add-dir``."""
+        directories = []
+        seen = set()
+        for _name, folder in self.folder_getter() or []:
+            path = Path(folder).expanduser()
+            if not path.is_dir():
+                continue
+            normalized = str(path.resolve())
+            key = str(path.resolve()).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            directories.append(normalized)
+        return directories
+
+    def _resume_id_from_current_tab(self) -> str | None:
+        """Extrae el identificador de resume de la pestaña de consola activa."""
+        output = self._output_for_tab_content(self.tabs.currentWidget())
+        text = output.toPlainText() if output else ""
+        match = re.search(
+            r"\bResume\s+copilot\s+--resume[=\s]+([A-Za-z0-9._:-]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return match.group(1) if match else None
 
     def _copilot_usage_is_at_limit(self):
         """Selecciona otro perfil antes de iniciar Copilot si el uso es alto."""

@@ -260,6 +260,22 @@ precompleta la URL de la pestaña actual, permite elegir el tipo de operación,
 limitar profundidad y páginas, muestra el informe dentro de WebAgent y
 permite guardar el crawl en JSON.
 
+### Capturar responses en vivo con CDP
+
+WebAgent expone el endpoint local de Chrome DevTools Protocol en el puerto
+`9222`. Para guardar las respuestas de red de la pestaña activa, abrí
+**Configuración → Capturar respuestas de la pestaña (HAR)...**, elegí un
+archivo `.har` y dejá la captura activa mientras navegás o interactuás con la
+página (por ejemplo, para registrar las respuestas de una timeline de X/Twitter).
+Cada response se escribe en el HAR automáticamente, incluyendo headers, URL y
+body cuando Chromium lo permite. Usá la misma opción para detener la captura.
+
+La dependencia `websocket-client` es necesaria para la conexión CDP:
+
+```bash
+pip install -r requirements.txt
+```
+
 ### Catálogo de literatura
 
 El catálogo inicial de libros, fanfiction y novelas serializadas está en

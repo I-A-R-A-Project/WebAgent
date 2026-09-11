@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineDownloadRequest
-from PyQt6.QtCore import Qt, QUrl, QMimeData, QEvent, QTimer
+from PyQt6.QtCore import Qt, QUrl, QMimeData, QEvent, QTimer, QThread
 from PyQt6.QtGui import QAction, QKeySequence, QKeyEvent, QShortcut
 
 from file_ops import GitVersioning
@@ -33,6 +33,7 @@ from ai_manager import AgentConfigStore
 from agent_console import AgentConsolePanel
 from agent_runs import attach_bridge, render_agent_runs_page
 from package_script_tab import PackageScriptTab
+from cdp_har import CdpHarWorker
 from web_common.json_store import SidebarAppsStore
 from web_common.history import HistoryDialog, HistoryStore
 from web_common.navbar import BasicNavbar, bind_navigation, save_web_page
@@ -99,6 +100,12 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         self._download_dialogs = []
         self._agent_dialogs = []
         self._devtools_windows = []
+        self._har_thread = None
+        self._har_worker = None
+        self._har_action = None
+        self._har_webview = None
+        self._har_output_path = None
+        self._pending_har_tab_close = None
         self._closing_wait_for_agents = False
 
         self._setup_ui()
@@ -958,6 +965,20 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         return open_default_tab(self._add_tab)
 
     def _close_tab(self, index: int):
+        widget = self.tabs.widget(index)
+        if self._har_worker is not None and widget is self._har_webview:
+            # La captura debe terminar de escribir el HAR antes de destruir
+            # la pestaña que la originó.
+            self._pending_har_tab_close = widget
+            self._har_worker.stop()
+            self.statusBar().showMessage(
+                "Finalizando la captura HAR antes de cerrar la pestaña...",
+                4000,
+            )
+            return
+        self._close_tab_now(index)
+
+    def _close_tab_now(self, index):
         close_shared_tab(
             self.tabs,
             index,
@@ -1032,6 +1053,136 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         website_action.setToolTip("Crawlear y analizar una URL")
         website_action.triggered.connect(self._open_website_tools)
         view_menu.addAction(website_action)
+        har_action = QAction("Capturar respuestas de la pestaña (HAR)...", self)
+        har_action.setToolTip("Guardar automáticamente las respuestas de red de la pestaña activa")
+        har_action.triggered.connect(self._toggle_har_capture)
+        view_menu.addAction(har_action)
+        self._har_action = har_action
+
+    def _toggle_har_capture(self):
+        if self._har_worker is not None:
+            self._har_worker.stop()
+            self.statusBar().showMessage("Finalizando captura HAR...", 3000)
+            return
+
+        webview = self.current_webview()
+        if not webview or not webview.url().isValid():
+            QMessageBox.warning(self, "Captura HAR", "No hay una pestaña web activa.")
+            return
+        tab_meta = self.tab_data.get(id(webview), {})
+        target_dir, _ = self._resolve_target_folder(tab_meta)
+        suggested = str(Path(target_dir) / "responses.har")
+        output_path, _ = QFileDialog.getSaveFileName(
+            self, "Guardar captura HAR", suggested, "HTTP Archive (*.har)"
+        )
+        if not output_path:
+            return
+
+        self._har_thread = QThread(self)
+        self._har_worker = CdpHarWorker(
+            webview.url().toString(), output_path
+        )
+        self._har_webview = webview
+        self._har_output_path = Path(output_path)
+        self._har_worker.moveToThread(self._har_thread)
+        self._har_thread.started.connect(self._har_worker.run)
+        self._har_worker.ready.connect(self._reload_har_webview)
+        self._har_worker.output_path_changed.connect(
+            lambda path: self._set_har_output_path(path)
+        )
+        self._har_worker.response_captured.connect(
+            lambda count: self.statusBar().showMessage(
+                f"Captura HAR: {count} response(s) guardadas", 3000
+            )
+        )
+        self._har_worker.failed.connect(self._har_capture_failed)
+        self._har_worker.finished.connect(self._har_capture_finished)
+        self._har_thread.start()
+        self._har_action.setText("Detener captura HAR")
+        self.statusBar().showMessage(
+            f"Preparando captura HAR y recargando la pestaña...", 5000
+        )
+
+    def _set_har_output_path(self, path):
+        self._har_output_path = Path(path)
+        self.statusBar().showMessage(
+            f"El archivo elegido está bloqueado; guardando la captura en {path}",
+            6000,
+        )
+
+    def _reload_har_webview(self):
+        """Recarga la pestaña una vez habilitado el monitoreo CDP."""
+        if self._har_worker is None or self._har_webview is None:
+            return
+        self._har_webview.reload()
+        self.statusBar().showMessage(
+            f"Capturando respuestas de la recarga en {self._har_output_path}",
+            5000,
+        )
+
+    def _har_capture_failed(self, message):
+        closing_tab = self._pending_har_tab_close is not None
+        self._har_cleanup()
+        if closing_tab:
+            self.statusBar().showMessage(
+                f"La captura HAR no pudo finalizar: {message}",
+                6000,
+            )
+            self._finish_pending_har_tab_close()
+            return
+        QMessageBox.warning(self, "Captura HAR", f"No se pudo capturar tráfico CDP:\n{message}")
+
+    def _har_capture_finished(self):
+        output_path = self._har_output_path
+        self._har_cleanup()
+        if output_path and self._is_valid_har_file(output_path):
+            self.statusBar().showMessage(
+                f"Captura HAR finalizada y guardada en {output_path}", 6000
+            )
+        else:
+            self.statusBar().showMessage(
+                "La captura HAR terminó, pero el archivo no se guardó correctamente.",
+                6000,
+            )
+        self._finish_pending_har_tab_close()
+
+    @staticmethod
+    def _is_valid_har_file(path):
+        """Confirma que el archivo exista y contenga un documento HAR válido."""
+        try:
+            if not path.is_file() or path.stat().st_size == 0:
+                return False
+            document = json.loads(path.read_text(encoding="utf-8"))
+            return (
+                isinstance(document, dict)
+                and isinstance(document.get("log"), dict)
+                and document["log"].get("version") == "1.2"
+                and isinstance(document["log"].get("entries"), list)
+            )
+        except (OSError, UnicodeError, ValueError):
+            return False
+
+    def _har_cleanup(self):
+        thread = self._har_thread
+        self._har_worker = None
+        self._har_thread = None
+        self._har_webview = None
+        self._har_output_path = None
+        if self._har_action:
+            self._har_action.setText("Capturar respuestas de la pestaña (HAR)...")
+        if thread:
+            thread.quit()
+            thread.wait(3000)
+            thread.deleteLater()
+
+    def _finish_pending_har_tab_close(self):
+        widget = self._pending_har_tab_close
+        self._pending_har_tab_close = None
+        if widget is None:
+            return
+        index = self.tabs.indexOf(widget)
+        if index >= 0:
+            self._close_tab_now(index)
 
     def _open_agent_runs(self):
         """Abre una pestaña con el historial actualizado de ejecuciones."""
@@ -1208,6 +1359,11 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         )
 
     def closeEvent(self, event):
+        if self._har_worker is not None:
+            self._har_worker.stop()
+            if self._har_thread:
+                self._har_thread.quit()
+                self._har_thread.wait(3000)
         if self.agent_console.has_running_processes():
             event.ignore()
             if not self._closing_wait_for_agents:
