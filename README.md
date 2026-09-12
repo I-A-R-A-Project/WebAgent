@@ -321,6 +321,10 @@ fuera del repositorio mediante `--usage-output-file`. El archivo JSON conserva
 la salida estructurada del CLI; el log de WebAgent sólo registra una referencia
 y los campos de uso reconocidos, sin copiar credenciales.
 
+Desde **Configuración → Agentes IA → Copilot** también se puede establecer un
+límite de créditos por ejecución. El valor `Sin límite` conserva el
+comportamiento anterior.
+
 Al usar **Agregar tarea**, WebAgent actualiza `task_agent_context/` con un
 `collections.json` y copias de los README de cada Colección. Copilot se
 ejecuta desde ese directorio para clasificar la tarea con acceso explícito a

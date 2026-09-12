@@ -5,6 +5,7 @@ import shlex
 import shutil
 import re
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -184,6 +185,7 @@ class AgentConsolePanel(QWidget):
         self._copilot_login_buffer = ""
         self._copilot_auth_urls_seen = set()
         self._copilot_usage_output_file = None
+        self._copilot_session_id = None
         self._auth_warning_shown = set()
         self._highlighters = []
         self._collection_review_callback = None
@@ -308,6 +310,20 @@ class AgentConsolePanel(QWidget):
         self.directory_combo.setCurrentIndex(index)
         return True
 
+    def run_task(self, agent_id: str, task: str, folder: str | None = None):
+        """Encola una tarea desde otra vista y la ejecuta con este runner único."""
+        if agent_id not in AGENT_DEFS:
+            raise ValueError(f"Agente desconocido: {agent_id}")
+        task = task.strip()
+        if not task:
+            raise ValueError("La tarea no puede estar vacía.")
+        if folder is not None and not self.select_directory(folder):
+            raise ValueError(f"Directorio inexistente: {folder}")
+        self.task_edit.setPlainText(f"{agent_id} {task}")
+        self.setVisible(True)
+        self.raise_()
+        self.run_agent()
+
     def run_collection_review(
         self, task_text: str, context_dir: str, summary_path: str, callback
     ):
@@ -411,6 +427,7 @@ class AgentConsolePanel(QWidget):
 
         self.current_agent_id = agent_id
         self._copilot_usage_output_file = None
+        self._copilot_session_id = None
         self.current_run_kind = "help"
         self._active_folder = folder
         self._start_log(agent_id, folder, command, command)
@@ -449,12 +466,18 @@ class AgentConsolePanel(QWidget):
             ok, head, _ = GitVersioning.run(folder, ["rev-parse", "HEAD"], timeout=10)
             if ok:
                 self._git_start_head = head.strip()
+        session_line = (
+            f"session_id: {self._copilot_session_id}\n"
+            if self._copilot_session_id
+            else ""
+        )
         self._write_log(
             f"=== {AGENT_DEFS.get(agent_id, {}).get('short_label', 'Comando')} ===\n"
             f"started: {datetime.now().isoformat()}\n"
             f"profile_id: {profile_id}\n"
             f"profile: {profile_name}\n"
             f"cwd: {folder}\n"
+            f"{session_line}"
             f"command: {command}\n"
             f"task:\n{task}\n\n"
         )
@@ -622,6 +645,7 @@ class AgentConsolePanel(QWidget):
             return
         self.current_agent_id = agent_id
         self._copilot_usage_output_file = None
+        self._copilot_session_id = None
         self._current_task = task
         if agent_id == "copilot":
             self._copilot_allow_all_paths = allow_all_paths
@@ -644,6 +668,7 @@ class AgentConsolePanel(QWidget):
         folder = self._working_folder()
         config = AgentConfigStore().get(folder)
         command = config["agents"][agent_id].get("command", AGENT_DEFS[agent_id]["default_command"])
+        agent_options = config["agents"][agent_id].get("options", {})
         prompt = task
         resume_id = None
         if continue_requested:
@@ -690,6 +715,9 @@ class AgentConsolePanel(QWidget):
             )
             if allow_all_paths:
                 argv.append("--allow-all-paths")
+            if not continue_requested and explicit_resume_id is None:
+                self._copilot_session_id = str(uuid.uuid4())
+                argv.extend(["--session-id", self._copilot_session_id])
         if retrying_copilot:
             prompt = self._copilot_fallback_prompt()
             argv = [
@@ -703,6 +731,8 @@ class AgentConsolePanel(QWidget):
             )
             if allow_all_paths:
                 argv.append("--allow-all-paths")
+            self._copilot_session_id = str(uuid.uuid4())
+            argv.extend(["--session-id", self._copilot_session_id])
             self._copilot_quota_detected = False
         if not argv or shutil.which(argv[0]) is None:
             self._new_tab(
@@ -713,6 +743,9 @@ class AgentConsolePanel(QWidget):
             return
         if agent_id == "copilot":
             argv = self._attach_copilot_usage_output(argv)
+            max_credits = agent_options.get("max_ai_credits")
+            if isinstance(max_credits, (int, float)) and max_credits > 0:
+                argv.extend(["--max-ai-credits", str(max_credits)])
         if agent_id == "gemini":
             prompt_for_process = prompt + self._repository_context_for_gemini(prompt)
             argv = [
@@ -790,6 +823,12 @@ class AgentConsolePanel(QWidget):
                 index += 2
                 continue
             if argv[index].startswith("--usage-output-file="):
+                index += 1
+                continue
+            if argv[index] == "--max-ai-credits":
+                index += 2
+                continue
+            if argv[index].startswith("--max-ai-credits="):
                 index += 1
                 continue
             cleaned.append(argv[index])

@@ -28,7 +28,7 @@ from PyQt6.QtCore import Qt, QProcess, QProcessEnvironment, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QTextEdit,
     QPushButton, QLabel, QDialogButtonBox, QMessageBox, QGroupBox,
-    QTabWidget, QWidget, QComboBox, QCheckBox
+    QTabWidget, QWidget, QComboBox, QCheckBox, QSpinBox
 )
 from PyQt6.QtGui import QFont
 
@@ -602,10 +602,19 @@ class AIAgentsDialog(QDialog):
 
     def _save_agent_config(self, agent_id: str):
         widgets = self.agent_widgets[agent_id]
+        current_options = (
+            self.config_store.get(self.folder)
+            .get("agents", {})
+            .get(agent_id, {})
+            .get("options", {})
+        )
         self.config_store.set_agent_field(
             self.folder,
             agent_id,
             command=widgets["command_edit"].text().strip() or AGENT_DEFS[agent_id]["default_command"],
+            options={
+                "max_ai_credits": widgets["max_credits"].value()
+            } if "max_credits" in widgets else current_options,
         )
 
     def _build_agent_tab(self, tab: QWidget, agent_id: str):
@@ -633,6 +642,31 @@ class AIAgentsDialog(QDialog):
         command_edit = QLineEdit(agent_cfg.get("command", defn["default_command"]))
         command_edit.setPlaceholderText("Editá la línea completa; usá {prompt} donde deba ir la tarea.")
         form.addRow("Comando:", command_edit)
+        max_credits = None
+        if agent_id == "copilot":
+            max_credits = QSpinBox()
+            max_credits.setRange(0, 1000000)
+            max_credits.setSpecialValueText("Sin límite")
+            max_credits.setSuffix(" créditos")
+            max_credits.setValue(
+                int(agent_cfg.get("options", {}).get("max_ai_credits") or 0)
+            )
+            max_credits.setToolTip(
+                "Límite máximo de créditos AI para esta ejecución; 0 no limita."
+            )
+            form.addRow("Límite por ejecución:", max_credits)
+        if agent_id == "copilot":
+            task_edit = QTextEdit()
+            task_edit.setPlaceholderText(
+                "Escribí una tarea para ejecutarla en la consola central de WebAgent."
+            )
+            task_edit.setFixedHeight(72)
+            form.addRow("Tarea:", task_edit)
+            delegate_btn = QPushButton("Ejecutar en consola central")
+            delegate_btn.clicked.connect(
+                lambda: self._delegate_task_to_console(task_edit)
+            )
+            form.addRow("", delegate_btn)
         save_command_btn = QPushButton("Guardar comando")
         save_command_btn.clicked.connect(
             lambda: self._save_agent_config(agent_id)
@@ -679,11 +713,34 @@ class AIAgentsDialog(QDialog):
             "command_edit": command_edit,
             "usage_label": usage_label,
         }
+        if max_credits is not None:
+            self.agent_widgets[agent_id]["max_credits"] = max_credits
+        if agent_id == "copilot":
+            self.agent_widgets[agent_id]["task_edit"] = task_edit
         if agent_id in ("copilot", "gemini", "groq"):
             self.agent_widgets[agent_id]["token_edit"] = token_edit
 
         if agent_id == "copilot":
             self.agent_widgets[agent_id]["add_template_btn"] = add_template_btn
+
+    def _delegate_task_to_console(self, task_edit):
+        """Envía Copilot al runner central para evitar una segunda ejecución Qt."""
+        task = task_edit.toPlainText().strip()
+        if not task:
+            QMessageBox.warning(self, "Tarea vacía", "Escribí una tarea antes de ejecutar.")
+            return
+        console = getattr(self.parent(), "agent_console", None)
+        if console is None:
+            QMessageBox.warning(
+                self, "Consola no disponible",
+                "No se encontró la consola central de agentes.",
+            )
+            return
+        try:
+            self._save_agent_config("copilot")
+            console.run_task("copilot", task, self.folder)
+        except ValueError as exc:
+            QMessageBox.warning(self, "No se pudo ejecutar la tarea", str(exc))
 
     def _show_cli_help(self, agent_id: str):
         """Ejecuta el help del CLI en la consola inferior de la ventana."""
@@ -752,6 +809,10 @@ class AIAgentsDialog(QDialog):
         extra = {
             "command": widgets["command_edit"].text().strip() or defn["default_command"],
         }
+        if agent_id == "copilot" and "max_credits" in widgets:
+            extra["options"] = {
+                "max_ai_credits": widgets["max_credits"].value()
+            }
         # track preview button for UI state
         widgets["preview_btn"] = widgets.get("preview_btn") or None
         if defn["needs_task"]:

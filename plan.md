@@ -13,6 +13,9 @@ para la primera fase.
 
 ## Fase 1 — Observabilidad y seguridad operativa
 
+Estado: en progreso. Ya están implementados `--usage-output-file`,
+`--max-ai-credits`, el aislamiento de métricas y las exclusiones locales.
+
 1. Guardar las estadísticas finales de Copilot con `--usage-output-file` en
    `%APPDATA%\IARA\WebAgent\agent_usage\<profile_id>\`, fuera del repositorio.
 2. Asociar cada archivo de uso con el log de WebAgent y registrar sus datos
@@ -27,6 +30,9 @@ para la primera fase.
 
 ## Fase 2 — Sesiones y salida estructurada
 
+Estado: en progreso. Ya están implementados los identificadores de sesión y
+la lectura de métricas estructuradas en el historial.
+
 1. Asignar `--session-id` o `--name` estable a cada ejecución y guardar la
    relación con el log, perfil, carpeta y tarea.
 2. Evaluar `--output-format json` para Copilot y procesar JSONL sin depender de
@@ -36,6 +42,10 @@ para la primera fase.
 4. Centralizar helpers de sesión, uso y permisos en módulos de agentes.
 
 ## Fase 3 — Consolidación de la ejecución
+
+Estado: iniciada. El diálogo de agentes ya puede delegar tareas de Copilot al
+runner central de `AgentConsolePanel`; queda retirar gradualmente la ruta Qt
+duplicada después de migrar sus usos restantes.
 
 1. Hacer que `AIAgentsDialog` delegue la ejecución en `AgentConsolePanel` o
    extraer un runner común, eliminando la lógica duplicada de `ai_manager.py`.

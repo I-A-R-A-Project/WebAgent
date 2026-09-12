@@ -68,6 +68,57 @@ def _get(pattern: str, text: str, flags=re.MULTILINE):
     return m.group(1).strip() if m else None
 
 
+def _usage_value(usage: dict, names: tuple[str, ...]):
+    """Busca una métrica conocida en respuestas de CLI con esquemas variables."""
+    wanted = {name.lower().replace("_", "") for name in names}
+
+    def visit(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key.lower().replace("_", "") in wanted and isinstance(
+                    item, (int, float, str)
+                ):
+                    return item
+            for item in value.values():
+                found = visit(item)
+                if found is not None:
+                    return found
+        elif isinstance(value, list):
+            for item in value:
+                found = visit(item)
+                if found is not None:
+                    return found
+        return None
+
+    return visit(usage)
+
+
+def _read_usage_file(raw: str):
+    usage_path = _get(r"^usage_output_file:\s*(.+)$", raw)
+    if not usage_path:
+        return None, None
+    path = Path(usage_path)
+    try:
+        if not path.is_file() or path.stat().st_size > 1_000_000:
+            return usage_path, None
+        usage = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return usage_path, None
+    if not isinstance(usage, dict):
+        return usage_path, None
+    credits = _usage_value(
+        usage,
+        ("ai_credits", "aiCredits", "credits", "premium_requests"),
+    )
+    duration = _usage_value(usage, ("duration", "duration_ms", "durationMs"))
+    model = _usage_value(usage, ("model", "model_name", "modelName"))
+    return usage_path, {
+        "credits": credits,
+        "duration": duration,
+        "model": model,
+    }
+
+
 def _summarize_log(filename: str, raw: str) -> dict:
     """Extrae solo los campos que necesita la lista: nada del cuerpo
     completo, la actividad del agente ni el diff.
@@ -81,6 +132,7 @@ def _summarize_log(filename: str, raw: str) -> dict:
     profile_id = _get(r"^profile_id:\s*(.+)$", raw)
     profile_name = _get(r"^profile:\s*(.+)$", raw) or profile_id
     cwd = _get(r"^cwd:\s*(.+)$", raw)
+    session_id = _get(r"^session_id:\s*(.+)$", raw)
     branch = _get(r"Contexto Git:\s*rama=(\S+)", raw) or "—"
 
     task_match = re.search(r"\ntask:\n(.*?)\n\n", raw, re.DOTALL)
@@ -95,6 +147,7 @@ def _summarize_log(filename: str, raw: str) -> dict:
 
     changes_match = re.search(r"Changes\s+\+(\d+)\s+-(\d+)", raw)
     credits_match = re.search(r"AI Credits\s+([\d.]+)(?:\s*\(([^)]+)\))?", raw)
+    usage_file, usage = _read_usage_file(raw)
 
     exit_code = None
     for m in re.finditer(r"---\s*(?:.*?)\s*\(código\s*(-?\d+)\)\s*---", raw):
@@ -147,6 +200,7 @@ def _summarize_log(filename: str, raw: str) -> dict:
         "profileId": profile_id,
         "profileName": profile_name,
         "cwd": cwd,
+        "sessionId": session_id,
         "branch": branch,
         "taskText": task_text,
         "status": status,
@@ -159,8 +213,18 @@ def _summarize_log(filename: str, raw: str) -> dict:
         "credits": (
             {"amount": float(credits_match.group(1)), "duration": credits_match.group(2)}
             if credits_match
-            else None
+            else (
+                {
+                    "amount": float(usage["credits"]),
+                    "duration": usage["duration"],
+                }
+                if usage and isinstance(usage.get("credits"), (int, float, str))
+                and str(usage["credits"]).replace(".", "", 1).isdigit()
+                else None
+            )
         ),
+        "usageFile": usage_file,
+        "usage": usage,
     }
 
 
