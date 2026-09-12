@@ -178,6 +178,7 @@ class AgentConsolePanel(QWidget):
         self._copilot_quota_detected = False
         self._copilot_retry_pending = False
         self._copilot_original_task = ""
+        self._copilot_allow_all_paths = False
         self._copilot_profiles_tried = set()
         self._copilot_login_buffer = ""
         self._copilot_auth_urls_seen = set()
@@ -573,10 +574,12 @@ class AgentConsolePanel(QWidget):
         if retrying_copilot:
             agent_id = "copilot"
             task = self._copilot_original_task
+            allow_all_paths = self._copilot_allow_all_paths
             self._copilot_retry_pending = False
         else:
             self._profile_override = None
             task = parts[1].strip() if len(parts) > 1 else ""
+            allow_all_paths = False
         continue_requested = False
         if parts[0].lower() in ("-continue", "--continue"):
             continue_requested = True
@@ -597,6 +600,8 @@ class AgentConsolePanel(QWidget):
                     finished=True,
                 )
                 return
+        if agent_id == "copilot" and not retrying_copilot:
+            task, allow_all_paths = self._extract_copilot_path_override(task)
         if agent_id not in AGENT_DEFS:
             self._run_command(raw_task)
             return
@@ -609,6 +614,8 @@ class AgentConsolePanel(QWidget):
             return
         self.current_agent_id = agent_id
         self._current_task = task
+        if agent_id == "copilot":
+            self._copilot_allow_all_paths = allow_all_paths
         if not self._profile_id():
             self._new_tab(
                 agent_id,
@@ -647,8 +654,8 @@ class AgentConsolePanel(QWidget):
         script_dir = str(Path(__file__).resolve().parent)
         argv = [token.replace("{prompt}", prompt).replace("{script_dir}", script_dir) for token in tokens]
         if agent_id == "copilot":
-            # Nunca conservar permisos globales aunque hayan quedado guardados
-            # en un comando personalizado o en una configuración antigua.
+            # Los permisos globales sólo se habilitan mediante la bandera explícita
+            # escrita al final de la tarea.
             argv = [
                 token for token in argv
                 if token not in ("--allow-all-paths", "--allow-all")
@@ -662,9 +669,11 @@ class AgentConsolePanel(QWidget):
                             break
             argv.extend(
                 argument
-                for folder_path in self._collection_directories_for_copilot()
+                for folder_path in self._selected_collection_directory_for_copilot()
                 for argument in ("--add-dir", folder_path)
             )
+            if allow_all_paths:
+                argv.append("--allow-all-paths")
         if retrying_copilot:
             prompt = self._copilot_fallback_prompt()
             argv = [
@@ -673,9 +682,11 @@ class AgentConsolePanel(QWidget):
             ]
             argv.extend(
                 argument
-                for folder_path in self._collection_directories_for_copilot()
+                for folder_path in self._selected_collection_directory_for_copilot()
                 for argument in ("--add-dir", folder_path)
             )
+            if allow_all_paths:
+                argv.append("--allow-all-paths")
             self._copilot_quota_detected = False
         if not argv or shutil.which(argv[0]) is None:
             self._new_tab(
@@ -719,21 +730,21 @@ class AgentConsolePanel(QWidget):
         self.setVisible(True)
         self.task_edit.clear()
 
-    def _collection_directories_for_copilot(self) -> list[str]:
-        """Devuelve rutas existentes de Colecciones para ``copilot --add-dir``."""
-        directories = []
-        seen = set()
-        for _name, folder in self.folder_getter() or []:
-            path = Path(folder).expanduser()
-            if not path.is_dir():
-                continue
-            normalized = str(path.resolve())
-            key = str(path.resolve()).casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            directories.append(normalized)
-        return directories
+    @staticmethod
+    def _extract_copilot_path_override(task: str) -> tuple[str, bool]:
+        """Extrae ``--allow-all-paths`` cuando aparece al final de la tarea."""
+        match = re.search(r"(?:^|\s)--allow-all-paths\s*$", task)
+        if not match:
+            return task, False
+        return task[: match.start()].rstrip(), True
+
+    def _selected_collection_directory_for_copilot(self) -> list[str]:
+        """Devuelve sólo la carpeta seleccionada para ``copilot --add-dir``."""
+        folder = self._working_folder()
+        if not folder:
+            return []
+        path = Path(folder).expanduser()
+        return [str(path.resolve())] if path.is_dir() else []
 
     def _resume_id_from_current_tab(self) -> str | None:
         """Extrae el identificador de resume de la pestaña de consola activa."""

@@ -494,8 +494,19 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
     def refresh_sidebar_apps(self):
         self.rail.rebuild(self.sidebar_apps_store.all(), self.app_panel.active_app_id)
 
-    def _handle_new_window_request(self, request):
-        request.openIn(new_tab_page(self._add_tab))
+    def _profile_id_for_webview(self, webview):
+        return self.tab_data.get(id(webview), {}).get(
+            "profile_id", self.current_profile_id
+        )
+
+    def _handle_new_window_request(self, request, source_webview=None):
+        if not hasattr(request, "openIn"):
+            source_webview = request
+            profile_id = self._profile_id_for_webview(source_webview)
+            return new_tab_page(lambda: self._add_tab(profile_id=profile_id))
+
+        profile_id = self._profile_id_for_webview(source_webview)
+        request.openIn(new_tab_page(lambda: self._add_tab(profile_id=profile_id)))
 
     def _setup_sidebar(self, parent_layout):
         """Sidebar con Perfiles y Colecciones."""
@@ -702,8 +713,9 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             QUrl.fromLocalFile(str(Path(__file__).with_name("agent_runs.html"))),
         )
 
-    def _handle_new_tab_request(self):
-        return new_tab_page(self._add_tab)
+    def _handle_new_tab_request(self, source_webview=None):
+        profile_id = self._profile_id_for_webview(source_webview)
+        return new_tab_page(lambda: self._add_tab(profile_id=profile_id))
 
     def _execute_task(self, webview, profile_id: str, manager: TaskManager, task: dict):
         """Relaciona la tarea con una Colección mediante Gemini/Copilot."""
