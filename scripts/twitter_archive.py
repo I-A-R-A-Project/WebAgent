@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-HTML_TEMPLATE = """<!doctype html>
+HTML_TEMPLATE = r"""<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
@@ -162,12 +162,40 @@ HTML_TEMPLATE = """<!doctype html>
     gap:6px;
     margin-top:12px;
   }
-  .contact-grid a{display:block; line-height:0;}
+  .thumb-wrap{position:relative; line-height:0; cursor:zoom-in;}
   .contact-grid img{
     width:100%; height:170px; object-fit:cover;
     background:var(--panel-alt);
     border:1px solid var(--rule);
+    display:block;
   }
+  .thumb-wrap .expand{
+    position:absolute; top:6px; right:6px;
+    width:26px; height:26px;
+    display:flex; align-items:center; justify-content:center;
+    background:rgba(23,19,16,.72);
+    border:1px solid var(--rule);
+    border-radius:2px;
+    pointer-events:none;
+  }
+  .thumb-wrap .expand svg{width:14px; height:14px; stroke:var(--ink); fill:none; stroke-width:1.6;}
+  .thumb-wrap:hover .expand, .thumb-wrap:focus-visible .expand{border-color:var(--accent);}
+
+  .lightbox{
+    position:fixed; inset:0; z-index:50;
+    background:rgba(10,8,6,.94);
+    display:flex; align-items:center; justify-content:center;
+    padding:36px;
+  }
+  .lightbox[hidden]{display:none;}
+  .lightbox img{max-width:100%; max-height:100%; border:1px solid var(--rule);}
+  .lightbox-close{
+    position:absolute; top:16px; right:18px;
+    width:38px; height:38px;
+    background:transparent; border:1px solid var(--rule); border-radius:2px;
+    color:var(--ink); font-size:1.3rem; line-height:1; cursor:pointer;
+  }
+  .lightbox-close:hover{border-color:var(--accent); color:var(--accent);}
 
   .nested{
     margin-top:14px;
@@ -255,11 +283,20 @@ HTML_TEMPLATE = """<!doctype html>
 
   <main id="tweets"></main>
 
+  <div class="lightbox" id="lightbox" hidden>
+    <button type="button" class="lightbox-close" id="lightbox-close" aria-label="Cerrar">&times;</button>
+    <img id="lightbox-img" src="" alt="">
+  </div>
+
   <script>
     const tweets = __TWEETS__;
 
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c =>
       ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'":'&#39;'}[c]));
+
+    // Los t.co que Twitter agrega al final del texto ya están representados
+    // por la imagen o el link "Abrir en X"; no aportan nada al leerlos.
+    const stripLinks = text => String(text ?? '').replace(/\s*https?:\/\/t\.co\/\S+/g, '').trim();
 
     const fmtDate = value => {
       if (!value) return 'fecha desconocida';
@@ -271,7 +308,8 @@ HTML_TEMPLATE = """<!doctype html>
       like:  '<svg viewBox="0 0 24 24"><path d="M12 20s-7-4.35-9.5-9C.7 7.5 3 4 6.5 4c2 0 3.3 1 5.5 3.2C14.2 5 15.5 4 17.5 4 21 4 23.3 7.5 21.5 11 19 15.65 12 20 12 20z"/></svg>',
       reply: '<svg viewBox="0 0 24 24"><path d="M4 5h16v10H8l-4 4V5z"/></svg>',
       rt:    '<svg viewBox="0 0 24 24"><path d="M6 5h9a3 3 0 0 1 3 3v3M18 19H9a3 3 0 0 1-3-3v-3M3 8l3-3 3 3M21 16l-3 3-3-3"/></svg>',
-      view:  '<svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="2.6"/></svg>'
+      view:  '<svg viewBox="0 0 24 24"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="2.6"/></svg>',
+      expand:'<svg viewBox="0 0 24 24"><path d="M9 3H3v6M15 3h6v6M9 21H3v-6M15 21h6v-6"/></svg>'
     };
 
     const avatarTag = (author, cls) =>
@@ -280,16 +318,20 @@ HTML_TEMPLATE = """<!doctype html>
 
     const mediaGrid = items => (items && items.length)
       ? `<div class="contact-grid">${items.map(item =>
-          `<a href="${esc(item.expanded_url || item.url)}" target="_blank" rel="noreferrer">
+          `<div class="thumb-wrap" data-full="${esc(item.media_url)}" role="button" tabindex="0" aria-label="Ampliar imagen">
             <img loading="lazy" src="${esc(item.media_url)}" alt="">
-          </a>`).join('')}</div>`
+            <span class="expand" aria-hidden="true">${ICONS.expand}</span>
+          </div>`).join('')}</div>`
       : '';
 
-    const nestedBlock = (tweet, label) => {
+    // innerHtml permite anidar, por ejemplo, la cita dentro del bloque del
+    // repost en lugar de dejarla como un elemento hermano suelto.
+    const nestedBlock = (tweet, label, innerHtml = '') => {
       if (!tweet) return '';
       const author = tweet.author || {};
+      const cleanText = stripLinks(tweet.text);
       const body = tweet.text
-        ? `<div class="text">${esc(tweet.text)}</div>`
+        ? (cleanText ? `<div class="text">${esc(cleanText)}</div>` : '')
         : '<div class="missing">El texto no venía incluido en la respuesta original.</div>';
       return `<div class="nested">
         <div class="nested-label">${label}</div>
@@ -302,6 +344,7 @@ HTML_TEMPLATE = """<!doctype html>
         </div>
         ${body}
         ${mediaGrid(tweet.media)}
+        ${innerHtml}
         <a class="open" href="${esc(tweet.url)}" target="_blank" rel="noreferrer">Ver publicación original ↗</a>
       </div>`;
     };
@@ -309,6 +352,21 @@ HTML_TEMPLATE = """<!doctype html>
     const frame = (tweet, index) => {
       const a = tweet.author;
       const num = String(index + 1).padStart(3, '0');
+
+      // Si es un repost, el texto propio (que solo repite "RT @autor: ...")
+      // y su texto ya se ven en el bloque anidado, así que no se duplica arriba.
+      const cleanText = stripLinks(tweet.text);
+      const ownText = (!tweet.retweeted && cleanText) ? `<div class="text">${esc(cleanText)}</div>` : '';
+
+      // Si el repost es en sí mismo una cita, esa cita queda anidada dentro
+      // del bloque del repost, no como elemento aparte al mismo nivel.
+      const quotedBlock = tweet.quoted
+        ? nestedBlock(tweet.quoted, `Cita a @${esc(tweet.quoted.author.screen_name)}`)
+        : '';
+      const secondary = tweet.retweeted
+        ? nestedBlock(tweet.retweeted, `Repost de @${esc(tweet.retweeted.author.screen_name)}`, quotedBlock)
+        : quotedBlock;
+
       return `<article class="frame">
         <div class="sprocket-rail">
           <span></span><span></span><span></span>
@@ -327,10 +385,9 @@ HTML_TEMPLATE = """<!doctype html>
               </div>
             </div>
           </div>
-          <div class="text">${esc(tweet.text)}</div>
+          ${ownText}
           ${!tweet.retweeted ? mediaGrid(tweet.media) : ''}
-          ${nestedBlock(tweet.retweeted, tweet.retweeted ? `Repost de @${esc(tweet.retweeted.author.screen_name)}` : '')}
-          ${nestedBlock(tweet.quoted, tweet.quoted ? `Cita a @${esc(tweet.quoted.author.screen_name)}` : '')}
+          ${secondary}
           <div class="stamp">
             <span class="stat">${ICONS.like} ${tweet.metrics.likes}</span>
             <span class="stat">${ICONS.reply} ${tweet.metrics.replies}</span>
@@ -367,6 +424,37 @@ HTML_TEMPLATE = """<!doctype html>
     ['search', 'author', 'sort'].forEach(id =>
       document.getElementById(id).addEventListener('input', render));
     render();
+
+    // ---------- lightbox ----------
+    const lightbox = document.getElementById('lightbox');
+    const lightboxImg = document.getElementById('lightbox-img');
+    const tweetsRoot = document.getElementById('tweets');
+
+    function openLightbox(src) {
+      lightboxImg.src = src;
+      lightbox.hidden = false;
+    }
+    function closeLightbox() {
+      lightbox.hidden = true;
+      lightboxImg.src = '';
+    }
+
+    tweetsRoot.addEventListener('click', e => {
+      const wrap = e.target.closest('.thumb-wrap');
+      if (wrap) openLightbox(wrap.dataset.full);
+    });
+    tweetsRoot.addEventListener('keydown', e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const wrap = e.target.closest('.thumb-wrap');
+      if (wrap) { e.preventDefault(); openLightbox(wrap.dataset.full); }
+    });
+    lightbox.addEventListener('click', e => {
+      if (e.target === lightbox) closeLightbox();
+    });
+    document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && !lightbox.hidden) closeLightbox();
+    });
   </script>
 </body>
 </html>
@@ -506,20 +594,40 @@ def extract_tweets(data: dict[str, Any]) -> list[dict[str, Any]]:
     return tweets
 
 
+def _input_files(path: Path) -> list[Path]:
+    """Devuelve los JSON candidatos de un archivo o de una carpeta."""
+    if path.is_file():
+        return [path]
+    if path.is_dir():
+        return sorted(candidate for candidate in path.iterdir()
+                      if candidate.is_file() and candidate.suffix.lower() == ".json")
+    return []
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Crear un archivo local de tweets desde una response de X.")
-    parser.add_argument("response", type=Path, help="response-*.json o carpeta que contenga responses")
+    parser.add_argument("response", type=Path, help="response JSON o carpeta que contenga responses")
     parser.add_argument("--output", type=Path, default=Path("twitter_archive"),
                         help="Carpeta de salida (por defecto: twitter_archive)")
     args = parser.parse_args()
-    files = sorted(args.response.glob("response-*.json")) if args.response.is_dir() else [args.response]
+    files = _input_files(args.response)
     if not files:
-        parser.error("No se encontraron archivos response-*.json")
+        parser.error("No se encontraron archivos JSON en la ruta indicada")
     all_tweets: dict[str, dict[str, Any]] = {}
     for path in files:
-        with path.open(encoding="utf-8") as stream:
-            for tweet in extract_tweets(json.load(stream)):
-                all_tweets[tweet["id"]] = tweet
+        try:
+            with path.open(encoding="utf-8") as stream:
+                data = json.load(stream)
+        except (OSError, json.JSONDecodeError) as error:
+            print(f"Archivo omitido ({path.name}): {error}")
+            continue
+        if not isinstance(data, dict):
+            print(f"Archivo omitido ({path.name}): el contenido no es un objeto JSON")
+            continue
+        for tweet in extract_tweets(data):
+            all_tweets[tweet["id"]] = tweet
+    if not all_tweets:
+        parser.error("No se encontraron tweets válidos en los archivos indicados")
     tweets = sorted(all_tweets.values(), key=lambda item: item["timestamp"], reverse=True)
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "tweets.json").write_text(json.dumps(tweets, ensure_ascii=False, indent=2), encoding="utf-8")

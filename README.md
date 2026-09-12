@@ -286,8 +286,8 @@ filtro por autor, métricas, medios y enlaces originales:
 python scripts/twitter_archive.py test/responses_content/response-000155.json
 ```
 
-También puede procesar todas las responses JSON de una carpeta y combinar los
-tweets sin duplicarlos:
+También puede recibir una carpeta: procesa todos sus archivos `.json` válidos y
+combina los tweets sin duplicarlos, aunque no usen el prefijo `response-`:
 
 ```bash
 python scripts/twitter_archive.py test/responses_content --output twitter_archive
