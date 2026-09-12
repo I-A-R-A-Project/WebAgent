@@ -93,6 +93,24 @@ def _usage_value(usage: dict, names: tuple[str, ...]):
     return visit(usage)
 
 
+def _normalize_metric(value):
+    """Convierte métricas numéricas a float o string sin romper nombres de modelo."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        cleaned = text.replace(",", "")
+        try:
+            return float(cleaned)
+        except ValueError:
+            return text
+    return value
+
+
 def _read_usage_file(raw: str):
     usage_path = _get(r"^usage_output_file:\s*(.+)$", raw)
     if not usage_path:
@@ -106,17 +124,26 @@ def _read_usage_file(raw: str):
         return usage_path, None
     if not isinstance(usage, dict):
         return usage_path, None
-    credits = _usage_value(
-        usage,
-        ("ai_credits", "aiCredits", "credits", "premium_requests"),
-    )
-    duration = _usage_value(usage, ("duration", "duration_ms", "durationMs"))
-    model = _usage_value(usage, ("model", "model_name", "modelName"))
-    return usage_path, {
-        "credits": credits,
-        "duration": duration,
-        "model": model,
+
+    metrics = {
+        "credits": _normalize_metric(
+            _usage_value(usage, ("ai_credits", "aiCredits", "credits", "premium_requests"))
+        ),
+        "duration": _normalize_metric(
+            _usage_value(usage, ("duration", "duration_ms", "durationMs"))
+        ),
+        "model": _usage_value(usage, ("model", "model_name", "modelName")),
+        "input_tokens": _normalize_metric(
+            _usage_value(usage, ("input_tokens", "inputTokens", "prompt_tokens", "promptTokens"))
+        ),
+        "output_tokens": _normalize_metric(
+            _usage_value(usage, ("output_tokens", "outputTokens", "completion_tokens", "completionTokens"))
+        ),
+        "total_tokens": _normalize_metric(
+            _usage_value(usage, ("total_tokens", "totalTokens"))
+        ),
     }
+    return usage_path, {key: value for key, value in metrics.items() if value is not None}
 
 
 def _summarize_log(filename: str, raw: str) -> dict:

@@ -76,10 +76,7 @@ AGENT_DEFS = {
         "label": "🤖 Copilot — Ejecutor principal",
         "short_label": "Copilot",
         "description": "Ejecutor AI: puede leer y modificar código y documentación, generar commits atómicos y ejecutar verificaciones de proyecto.",
-        "default_command": (
-            'copilot -p "{prompt}" --allow-all-tools '
-            "--allow-all-urls"
-        ),
+        "default_command": 'copilot -p "{prompt}" --allow-all-tools',
         "needs_task": False,
         "needs_source_branch": True,
         "prompt_template": "",
@@ -112,18 +109,6 @@ AGENT_DEFS = {
 }
 
 AGENT_ORDER = ["gemini", "copilot", "codex", "groq"]
-
-# Comandos por defecto de versiones anteriores que ya no aplican (se
-# migran solos al default actual si el usuario nunca los tocó a mano).
-LEGACY_DEFAULT_COMMANDS = {
-    "copilot": [
-        'copilot -p "{prompt}" --allow-all --no-ask-user',
-        (
-            'copilot -p "{prompt}" --allow-all-tools '
-            "--allow-all-paths --allow-all-urls"
-        ),
-    ],
-}
 
 
 # ======================================================================
@@ -191,20 +176,13 @@ class AgentConfigStore:
         }
 
     def _migrate(self, entry: dict) -> dict:
-        """Compatibilidad con la config vieja (un solo 'codex_command')
-        y asegura que estén los 3 agentes aunque se hayan agregado
-        después de que el usuario ya tuviera config guardada. También
-        migra comandos por defecto viejos conocidos (ej: el --yolo de
-        gemini) al default actual, siempre que el usuario no lo haya
-        editado a mano a otra cosa."""
+        """Asegura la estructura de configuración actual y normaliza entradas
+        antiguas que ya no forman parte del modelo de ejecución actual."""
         if "agents" not in entry:
-            legacy_cmd = entry.pop("codex_command", None)
             entry["agents"] = {
                 aid: {"command": defn["default_command"], "last_task": "", "options": {}}
                 for aid, defn in AGENT_DEFS.items()
             }
-            if legacy_cmd:
-                entry["agents"]["codex"]["command"] = legacy_cmd
         else:
             entry["agents"].pop("anyapi", None)
             for aid, defn in AGENT_DEFS.items():
@@ -217,7 +195,6 @@ class AgentConfigStore:
         for agent_config in entry["agents"].values():
             agent_config.pop("auth_token", None)
 
-        # Ensure autorun key exists for backward compatibility
         entry.setdefault("autorun", {})
         entry["autorun"].setdefault("command", "")
         entry["autorun"].setdefault("enabled", False)
@@ -225,18 +202,6 @@ class AgentConfigStore:
         entry["autorun"].setdefault("auto_commit", True)
         entry["source_branch"] = "master"
         entry["target_branch"] = "main"
-
-        for aid, defn in AGENT_DEFS.items():
-            current = entry["agents"][aid].get("command", "")
-            if current in LEGACY_DEFAULT_COMMANDS.get(aid, []) or (
-                aid == "copilot"
-                and current in (
-                    'copilot -i "{prompt}" --allow-all',
-                    'copilot -p "{prompt}"',
-                    'copilot -p "{prompt}" --allow-all',
-                )
-            ):
-                entry["agents"][aid]["command"] = defn["default_command"]
 
         return entry
 
@@ -390,7 +355,6 @@ class AIAgentsDialog(QDialog):
             "GEMINI_API_KEY", "GROQ_API_KEY",
         ):
             environment.remove(name)
-        environment.insert("COPILOT_ALLOW_ALL", "1")
         environment.insert("COPILOT_HOME", str(self.copilot_home))
         # Device flow link is opened by WebAgent, never by system browser.
         environment.insert("BROWSER", "cmd.exe /c exit 0")
@@ -655,18 +619,6 @@ class AIAgentsDialog(QDialog):
                 "Límite máximo de créditos AI para esta ejecución; 0 no limita."
             )
             form.addRow("Límite por ejecución:", max_credits)
-        if agent_id == "copilot":
-            task_edit = QTextEdit()
-            task_edit.setPlaceholderText(
-                "Escribí una tarea para ejecutarla en la consola central de WebAgent."
-            )
-            task_edit.setFixedHeight(72)
-            form.addRow("Tarea:", task_edit)
-            delegate_btn = QPushButton("Ejecutar en consola central")
-            delegate_btn.clicked.connect(
-                lambda: self._delegate_task_to_console(task_edit)
-            )
-            form.addRow("", delegate_btn)
         save_command_btn = QPushButton("Guardar comando")
         save_command_btn.clicked.connect(
             lambda: self._save_agent_config(agent_id)
@@ -715,32 +667,11 @@ class AIAgentsDialog(QDialog):
         }
         if max_credits is not None:
             self.agent_widgets[agent_id]["max_credits"] = max_credits
-        if agent_id == "copilot":
-            self.agent_widgets[agent_id]["task_edit"] = task_edit
         if agent_id in ("copilot", "gemini", "groq"):
             self.agent_widgets[agent_id]["token_edit"] = token_edit
 
         if agent_id == "copilot":
             self.agent_widgets[agent_id]["add_template_btn"] = add_template_btn
-
-    def _delegate_task_to_console(self, task_edit):
-        """Envía Copilot al runner central para evitar una segunda ejecución Qt."""
-        task = task_edit.toPlainText().strip()
-        if not task:
-            QMessageBox.warning(self, "Tarea vacía", "Escribí una tarea antes de ejecutar.")
-            return
-        console = getattr(self.parent(), "agent_console", None)
-        if console is None:
-            QMessageBox.warning(
-                self, "Consola no disponible",
-                "No se encontró la consola central de agentes.",
-            )
-            return
-        try:
-            self._save_agent_config("copilot")
-            console.run_task("copilot", task, self.folder)
-        except ValueError as exc:
-            QMessageBox.warning(self, "No se pudo ejecutar la tarea", str(exc))
 
     def _show_cli_help(self, agent_id: str):
         """Ejecuta el help del CLI en la consola inferior de la ventana."""
@@ -815,8 +746,6 @@ class AIAgentsDialog(QDialog):
             }
         # track preview button for UI state
         widgets["preview_btn"] = widgets.get("preview_btn") or None
-        if defn["needs_task"]:
-            extra["last_task"] = widgets["task_edit"].toPlainText().strip()
         self.config_store.set_agent_field(self.folder, agent_id, **extra)
 
         if defn["needs_source_branch"] and not GitVersioning.branch_exists(self.folder, source):

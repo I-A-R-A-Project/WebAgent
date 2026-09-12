@@ -13,8 +13,9 @@ para la primera fase.
 
 ## Fase 1 — Observabilidad y seguridad operativa
 
-Estado: en progreso. Ya están implementados `--usage-output-file`,
-`--max-ai-credits`, el aislamiento de métricas y las exclusiones locales.
+Estado: completada. Ya están implementados `--usage-output-file`,
+`--max-ai-credits`, el aislamiento de métricas, las exclusiones locales y una
+política que no concede acceso global a URLs por defecto.
 
 1. Guardar las estadísticas finales de Copilot con `--usage-output-file` en
    `%APPDATA%\IARA\WebAgent\agent_usage\<profile_id>\`, fuera del repositorio.
@@ -25,35 +26,28 @@ Estado: en progreso. Ya están implementados `--usage-output-file`,
 4. Incorporar límites configurables por ejecución (`--max-ai-credits`) y
    conservar el control de cancelación de `QProcess`.
 5. Reemplazar permisos globales de URL por una política explícita cuando la
-   tarea no necesite acceso web.
+   tarea no necesite acceso web. El comando por defecto y la rotación ya no
+   añaden `--allow-all-urls`; los comandos personalizados conservan sus
+   opciones explícitas.
 6. Aclarar `.gitignore` para excluir cachés, logs y artefactos locales.
 
 ## Fase 2 — Sesiones y salida estructurada
 
-Estado: en progreso. Ya están implementados los identificadores de sesión y
-la lectura de métricas estructuradas en el historial.
+Estado: completada. Quedó implementado el rastreo de sesión por ejecución,
+la salida legible de Copilot y la lectura de métricas estructuradas desde
+archivos JSON separados.
 
 1. Asignar `--session-id` o `--name` estable a cada ejecución y guardar la
    relación con el log, perfil, carpeta y tarea.
-2. Evaluar `--output-format json` para Copilot y procesar JSONL sin depender de
-   texto libre para detectar finalización, errores o estadísticas.
+2. Mantener la salida visual en texto; las métricas estructuradas se guardan
+   con `--usage-output-file` sin convertir la consola en JSONL.
 3. Mostrar en `agent_runs` los créditos, tokens, duración, modelo y archivo de
    uso asociado.
-4. Centralizar helpers de sesión, uso y permisos en módulos de agentes.
+4. Reservar `--output-format json` para integraciones automatizadas futuras;
+   no usarlo como formato predeterminado de la consola interactiva.
+5. Centralizar helpers de sesión, uso y permisos en módulos de agentes.
 
-## Fase 3 — Consolidación de la ejecución
-
-Estado: iniciada. El diálogo de agentes ya puede delegar tareas de Copilot al
-runner central de `AgentConsolePanel`; queda retirar gradualmente la ruta Qt
-duplicada después de migrar sus usos restantes.
-
-1. Hacer que `AIAgentsDialog` delegue la ejecución en `AgentConsolePanel` o
-   extraer un runner común, eliminando la lógica duplicada de `ai_manager.py`.
-2. Mantener compatibilidad con comandos personalizados de `AgentConfigStore`.
-3. Migrar respuestas y errores a eventos tipados para que la UI no dependa de
-   regex sobre la salida.
-
-## Fase 4 — ACP y workflows
+## Fase 3 — ACP y workflows
 
 1. Prototipar un `CopilotAcpProvider` aislado del runner legado.
 2. Implementar transporte, eventos, aprobación, cancelación y reanudación ACP.
