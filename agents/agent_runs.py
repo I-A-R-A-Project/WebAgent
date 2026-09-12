@@ -19,7 +19,7 @@ import json
 import re
 from pathlib import Path
 
-from paths import IA_DATA_DIR
+from core.paths import IA_DATA_DIR
 
 try:
     from PyQt6.QtCore import QObject, pyqtSlot

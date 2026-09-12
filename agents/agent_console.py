@@ -21,16 +21,15 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QPlainTextEdit, QPushButton,
     QComboBox, QLabel, QMessageBox, QTabBar, QTabWidget, QVBoxLayout, QWidget,
 )
-from paths import COPILOT_PROFILES_DIR, COPILOT_USAGE_DIR
-from paths import IA_DATA_DIR
-
-from ai_manager import (
+from core.paths import COPILOT_PROFILES_DIR, COPILOT_USAGE_DIR
+from core.paths import IA_DATA_DIR
+from agents.ai_manager import (
     AGENT_DEFS,
     AgentConfigStore,
     validate_autorun_command,
 )
-from file_ops import GitVersioning
-from automation import build_autorun_plan
+from core.file_ops import GitVersioning
+from core.automation import build_autorun_plan
 from web_common.tabs import prepare_tab_widget
 
 

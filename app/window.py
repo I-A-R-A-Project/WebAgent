@@ -22,18 +22,18 @@ from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineD
 from PyQt6.QtCore import Qt, QUrl, QMimeData, QEvent, QTimer, QThread
 from PyQt6.QtGui import QAction, QKeySequence, QKeyEvent, QShortcut
 
-from file_ops import GitVersioning
-from profiles import ProfileManager, ProfileWindowMixin
-from collections_manager import CollectionManager, CollectionWindowMixin
-from downloads import DownloadDialog
+from core.file_ops import GitVersioning
+from core.profiles import ProfileManager, ProfileWindowMixin
+from core.collections_manager import CollectionManager, CollectionWindowMixin
+from core.downloads import DownloadDialog
 from scripts.website_tools.dialogs import WebsiteToolsDialog
-from new_tab_page import render_new_tab_page
-from task_manager import TaskManager
-from ai_manager import AgentConfigStore
-from agent_console import AgentConsolePanel
-from agent_runs import attach_bridge, render_agent_runs_page
-from package_script_tab import PackageScriptTab
-from cdp_har import CdpHarWorker
+from app.new_tab_page import render_new_tab_page
+from core.task_manager import TaskManager
+from agents.ai_manager import AgentConfigStore
+from agents.agent_console import AgentConsolePanel
+from agents.agent_runs import attach_bridge, render_agent_runs_page
+from app.package_script_tab import PackageScriptTab
+from app.cdp_har import CdpHarWorker
 from web_common.json_store import SidebarAppsStore
 from web_common.history import HistoryDialog, HistoryStore
 from web_common.navbar import BasicNavbar, bind_navigation, save_web_page
@@ -79,7 +79,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
 
         self.profile_manager = ProfileManager()
         self.collection_manager = CollectionManager()
-        from paths import BROWSER_DATA_DIR
+        from core.paths import BROWSER_DATA_DIR
 
         self.sidebar_apps_store = SidebarAppsStore(
             str(BROWSER_DATA_DIR / "sidebar_apps.json"), []
@@ -710,7 +710,9 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             bridges[id(webview)] = attach_bridge(webview)
         webview.page().setHtml(
             render_agent_runs_page(),
-            QUrl.fromLocalFile(str(Path(__file__).with_name("agent_runs.html"))),
+            QUrl.fromLocalFile(
+                str(Path(__file__).resolve().parent.parent / "agents" / "agent_runs.html")
+            ),
         )
 
     def _handle_new_tab_request(self, source_webview=None):

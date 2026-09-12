@@ -5,11 +5,11 @@
 WebAgent is a desktop web browser built with PyQt6 that manages isolated browser profiles for working with AI agents (Copilot, Claude, Gemini, Codex). Each profile has independent sessions, cookies, cache, and credentials. "Collections" are workspace groupings of bookmarks across profiles with optional Git versioning support.
 
 **Key architecture layers:**
-- **main.py**: QMainWindow with tabbed interface, profile/collection management, menu system
+- **app/window.py**: QMainWindow with tabbed interface, profile/collection management, menu system
 - **Profiles**: Isolated browser instances with separate storage, cache, home URLs, and zoom levels
 - **Collections**: Bookmarks/URLs with optional download folders and Git integration
-- **Agents**: Copilot CLI, Codex, Gemini, and Groq integration via `ai_manager.py`
-- **Task inbox**: `new_tab_page.py` and `task_manager.py` provide the local
+- **Agents**: Copilot CLI, Codex, Gemini, and Groq integration via `agents/ai_manager.py`
+- **Task inbox**: `app/new_tab_page.py` and `core/task_manager.py` provide the local
   task list; Gemini classifies tasks and Copilot remains the explicit executor.
 - **Git Versioning**: Downloads can be version-controlled instead of numbered duplicates
 - **web_common** (sibling directory): Shared UI components (tabs, navbars, sidebars, web profiles)
@@ -61,9 +61,9 @@ Collections link multiple profiles to a single workspace with optional Git versi
 ## Common Tasks
 
 ### Adding a New Feature
-1. **UI changes**: Edit `main.py` for windows/dialogs, or extend web_common components
+1. **UI changes**: Edit `app/window.py` for windows/dialogs, or extend web_common components
 2. **Profile/Collection logic**: Add methods to ProfileManager or CollectionManager
-3. **File operations**: Add to `file_ops.py` (GitVersioning or FileOps classes)
+3. **File operations**: Add to `core/file_ops.py` (GitVersioning or FileOps classes)
 4. **Web rendering**: Extend web_common modules (tabs.py, navbar.py, sidebar.py, web_profiles.py)
 
 ### Modifying Profile or Collection Persistence
@@ -72,7 +72,7 @@ Collections link multiple profiles to a single workspace with optional Git versi
 - Default profile is always present; handle via `is_default` flag
 
 ### Handling Downloads
-- `downloads.py` contains DownloadDialog and download request handling
+- `core/downloads.py` contains DownloadDialog and download request handling
 - Downloads can be versioned with git (GitVersioning) or numbered
 
 ### Local automation scripts
@@ -90,7 +90,7 @@ Collections link multiple profiles to a single workspace with optional Git versi
 - New `autorun` config per-folder: `{ "autorun": { "enabled": false, "command": "" } }` — if enabled, the configured command runs automatically after an agent completes. The main window's agent console runs it, streams output to the execution tab, and warns if it exits with a non-zero code.
 
 ### Adding Agent Functionality
-- Edit `ai_manager.py` to modify agent commands and configuration; execution and live output belong in `agent_console.py`.
+- Edit `agents/ai_manager.py` to modify agent commands and configuration; execution and live output belong in `agents/agent_console.py`.
 - Prompts are templates with `{target_branch}` and `{source_branch}` placeholders
 - Both agents check GitVersioning availability before running
 - Agents require a repo initialized in the target folder

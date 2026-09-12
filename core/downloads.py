@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QListWidget, QListWidgetItem, QMessageBox, QProgressBar
 )
 
-from file_ops import GitVersioning, FileOps
+from core.file_ops import GitVersioning, FileOps
 from web_common.local_viewer import archive_entries, extract_archive
 
 

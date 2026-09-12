@@ -19,8 +19,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QUrl, QTimer
 
-from file_ops import GitVersioning
-from paths import BROWSER_DATA_DIR, IA_DATA_DIR
+from core.file_ops import GitVersioning
+from core.paths import BROWSER_DATA_DIR, IA_DATA_DIR
 from web_common.tabs import keep_plus_tab_last
 
 MINIBROWSER_PROFILE_DIR = BROWSER_DATA_DIR / "profile"
@@ -300,7 +300,7 @@ class ProfileWindowMixin:
             self.setWindowTitle(f"WebAgent — {data['name']}")
 
     def _open_ai_manager(self, profile_id: str):
-        from ai_manager import AIAgentsDialog
+        from agents.ai_manager import AIAgentsDialog
 
         profile_id = self._ensure_agent_profile()
         if not profile_id:

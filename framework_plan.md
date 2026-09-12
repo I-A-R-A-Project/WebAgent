@@ -22,20 +22,20 @@ cambios Git, perfiles y aprobación de acciones.
 
 ### Componentes existentes relevantes
 
-- `window.py` conecta la interfaz, las pestañas, las Colecciones, la bandeja
+- `app/window.py` conecta la interfaz, las pestañas, las Colecciones, la bandeja
   de tareas y la consola inferior de agentes.
-- `agent_console.py` ejecuta comandos mediante `QProcess`, transmite salida en
+- `agents/agent_console.py` ejecuta comandos mediante `QProcess`, transmite salida en
   vivo, acepta stdin, guarda logs, detecta autenticación de Copilot y ejecuta
   autorun.
-- `ai_manager.py` contiene `AGENT_DEFS`, plantillas de comandos, configuración
+- `agents/ai_manager.py` contiene `AGENT_DEFS`, plantillas de comandos, configuración
   por carpeta, opciones CLI, perfiles, ramas y el diálogo de configuración.
-- `task_manager.py` persiste tareas JSON por perfil y clasifica Colecciones
+- `core/task_manager.py` persiste tareas JSON por perfil y clasifica Colecciones
   opcionalmente mediante Gemini.
 - `scripts/gemini_agent.py` y `scripts/groq_agent.py` son adaptadores simples
   de API que imprimen una respuesta y terminan.
-- `file_ops.py` centraliza operaciones Git, detección de repositorio, ramas,
+- `core/file_ops.py` centraliza operaciones Git, detección de repositorio, ramas,
   estado limpio, commits y contexto de ejecución.
-- `agent_runs.py` y `agent_runs.html` muestran los logs históricos guardados
+- `agents/agent_runs.py` y `agents/agent_runs.html` muestran los logs históricos guardados
   en `%APPDATA%\IARA\WebAgent\agent_logs`.
 - Los perfiles aíslan almacenamiento del navegador y `COPILOT_HOME`; las API
   keys y configuraciones se mantienen por carpeta/perfil.

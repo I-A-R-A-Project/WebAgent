@@ -32,8 +32,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont
 
-from file_ops import GitVersioning
-from paths import COPILOT_PROFILES_DIR, IA_DATA_DIR
+from core.file_ops import GitVersioning
+from core.paths import COPILOT_PROFILES_DIR, IA_DATA_DIR
 
 
 AUTORUN_ALLOWED_COMMANDS = {

@@ -161,32 +161,74 @@ python scripts/record_window.py --title "Calculadora" --duration 30 --output cap
 python scripts/record_window.py --list-windows
 ```
 
+## Requisitos previos
+
+WebAgent espera que exista un directorio hermano llamado `web_common` junto a este repositorio, por ejemplo:
+
+```text
+IARA/
+├── web_common/
+├── WebAgent/
+└── ...
+```
+
+Esto es necesario porque `app/main.py` agrega `web_common` al `sys.path` antes de importar componentes compartidos del navegador. Si no se encuentra, la app termina con un mensaje de error.
+
+Requisitos básicos:
+
+- Python 3.10+
+- PyQt6
+- PyQt6-WebEngine
+- `git` para versionado y operaciones de repositorio
+- Herramientas opcionales del agente y del sistema: `codex`, `copilot`, `ffmpeg`, `ast-grep`, etc.
+
 ## Instalación y ejecución
 
-Requiere Python, PyQt6 y PyQt6-WebEngine:
+1. Clona o descarga este repo junto a `web_common`.
+2. Instala dependencias:
 
 ```bash
 pip install -r requirements.txt
+```
+
+3. Ejecuta la aplicación:
+
+```bash
 python main.py
 ```
 
-Los imports son locales; ejecutar `python main.py` desde la carpeta `WebAgent`.
+El archivo raíz `main.py` es un lanzador pequeño; la entrada real de la app está en `app/main.py`.
 
 ## Archivos y módulos principales
 
 ```text
 WebAgent/
-├── main.py                 # Ventana, pestañas, perfiles y navegación
-├── profiles.py             # Perfiles aislados y carpeta común de archivos
-├── collections_manager.py  # Colecciones y marcadores multi-perfil
-├── downloads.py            # Descargas, reemplazo y extracción
-├── ai_manager.py           # Terminal integrada y gestión de agentes
-├── new_tab_page.py         # Búsqueda Google y bandeja de tareas
-├── task_manager.py         # Persistencia y clasificación de tareas
-├── scripts/website_tools/   # Crawling y extracción web controlada
-├── web_engine.py           # Popups OAuth y vistas locales
-├── file_ops.py             # Git, ramas y operaciones de archivos
-└── requirements.txt        # Dependencias Python
+├── main.py                     # Lanzador del proyecto
+├── app/
+│   ├── main.py                # Entry point real de la UI
+│   ├── window.py              # Ventana principal, tabs y gestión del navegador
+│   ├── new_tab_page.py        # Página inicial de nueva pestaña
+│   └── ...
+├── core/
+│   ├── profiles.py            # Gestión de perfiles y aislamiento
+│   ├── collections_manager.py # Colecciones, bookmarks y trabajo por proyecto
+│   ├── downloads.py           # Descargas y flujo de archivos
+│   ├── file_ops.py            # Operaciones de archivos y Git
+│   └── task_manager.py        # Tareas locales y contexto del agente
+├── agents/
+│   ├── ai_manager.py          # Configuración y providers de IA
+│   ├── agent_console.py       # Consola de ejecución y salida
+│   └── ...
+├── scripts/
+│   ├── record_window.py       # Grabación de ventana con FFmpeg
+│   ├── refactor_ast_grep.py   # Búsquedas/refactors estructurales
+│   ├── twitter_archive.py     # Archivado de responses de X/Twitter
+│   ├── website_*.py           # Crawler, analizador, downloader y scraper
+│   └── ...
+├── requirements.txt            # Dependencias principales de Python
+├── package.json                # Herramientas JS para refactors opcionales
+├── README.md
+└── ...
 ```
 
 Cada pestaña nueva incluye búsqueda de Google y una bandeja local de tareas.

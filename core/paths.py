@@ -6,7 +6,7 @@ from pathlib import Path
 
 def _ensure_local_imports():
     repo_root = Path(__file__).resolve().parent
-    for base_dir in (repo_root.parent, repo_root):
+    for base_dir in (repo_root.parent.parent, repo_root.parent, repo_root):
         if (base_dir / "web_common").is_dir():
             sys.path.insert(0, str(base_dir))
             return

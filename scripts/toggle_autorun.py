@@ -15,9 +15,9 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from paths import IA_DATA_DIR
-from ai_manager import validate_autorun_command
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from core.paths import IA_DATA_DIR
+from agents.ai_manager import validate_autorun_command
 
 CONFIG_PATH = IA_DATA_DIR / "codex_config.json"
 

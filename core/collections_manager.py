@@ -31,9 +31,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QUrl
 
-from file_ops import GitVersioning
-from paths import IA_DATA_DIR, TASK_AGENT_CONTEXT_DIR
-from profiles import ProfileManager
+from core.file_ops import GitVersioning
+from core.paths import IA_DATA_DIR, TASK_AGENT_CONTEXT_DIR
+from core.profiles import ProfileManager
 
 
 # ======================================================================
@@ -836,7 +836,7 @@ class CollectionWindowMixin:
                 "sus agentes IA.",
             )
             return
-        from ai_manager import RepositoryConfigDialog
+        from agents.ai_manager import RepositoryConfigDialog
 
         dialog = RepositoryConfigDialog(
             self,

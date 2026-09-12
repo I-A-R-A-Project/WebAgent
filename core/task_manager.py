@@ -4,7 +4,7 @@ import json
 import uuid
 from datetime import datetime
 
-from paths import IA_DATA_DIR
+from core.paths import IA_DATA_DIR
 
 
 class TaskManager:
