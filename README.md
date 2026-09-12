@@ -307,6 +307,7 @@ files_dir.txt                # Carpeta común de archivos y descargas
 collections.json              # Colecciones y marcadores
 session.json                  # Pestañas restaurables
 copilot_profiles/<id>/        # Estado de Copilot por perfil
+agent_usage/<id>/             # Estadísticas JSON de ejecuciones de Copilot
 profiles/<id>/storage/        # Cookies y almacenamiento Chromium
 profiles/<id>/cache/          # Cache Chromium
 task_agent_context/           # Datos y copias de README para "Agregar tarea"
@@ -314,6 +315,11 @@ task_agent_context/           # Datos y copias de README para "Agregar tarea"
 
 No incluir estas carpetas en commits públicos si contienen sesiones,
 credenciales, cookies o datos personales.
+
+Las ejecuciones no interactivas de Copilot guardan sus estadísticas finales
+fuera del repositorio mediante `--usage-output-file`. El archivo JSON conserva
+la salida estructurada del CLI; el log de WebAgent sólo registra una referencia
+y los campos de uso reconocidos, sin copiar credenciales.
 
 Al usar **Agregar tarea**, WebAgent actualiza `task_agent_context/` con un
 `collections.json` y copias de los README de cada Colección. Copilot se

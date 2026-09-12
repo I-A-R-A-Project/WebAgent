@@ -1,5 +1,6 @@
 """Panel inferior para ejecutar agentes o comandos y mostrar su salida en vivo."""
 
+import json
 import shlex
 import shutil
 import re
@@ -19,7 +20,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QPlainTextEdit, QPushButton,
     QComboBox, QLabel, QMessageBox, QTabBar, QTabWidget, QVBoxLayout, QWidget,
 )
-from paths import COPILOT_PROFILES_DIR
+from paths import COPILOT_PROFILES_DIR, COPILOT_USAGE_DIR
 from paths import IA_DATA_DIR
 
 from ai_manager import (
@@ -182,6 +183,7 @@ class AgentConsolePanel(QWidget):
         self._copilot_profiles_tried = set()
         self._copilot_login_buffer = ""
         self._copilot_auth_urls_seen = set()
+        self._copilot_usage_output_file = None
         self._auth_warning_shown = set()
         self._highlighters = []
         self._collection_review_callback = None
@@ -194,7 +196,8 @@ class AgentConsolePanel(QWidget):
         self.task_edit.setFixedHeight(76)
         self.task_edit.setPlaceholderText(
             "copilot/codex/gemini/groq seguido de la tarea, o un comando de terminal... "
-            "(-continue copilot para retomar la pestaña activa; Shift+Enter para ejecutar)"
+            "(--resume=<id> para retomar una sesión; -continue copilot para la pestaña activa; "
+            "Shift+Enter para ejecutar)"
         )
         apply_console_style(self.task_edit)
         controls.addWidget(self.task_edit, 1)
@@ -407,6 +410,7 @@ class AgentConsolePanel(QWidget):
             return
 
         self.current_agent_id = agent_id
+        self._copilot_usage_output_file = None
         self.current_run_kind = "help"
         self._active_folder = folder
         self._start_log(agent_id, folder, command, command)
@@ -601,11 +605,15 @@ class AgentConsolePanel(QWidget):
                 )
                 return
         if agent_id == "copilot" and not retrying_copilot:
+            task, explicit_resume_id = self._extract_copilot_resume(task)
             task, allow_all_paths = self._extract_copilot_path_override(task)
+        else:
+            explicit_resume_id = None
         if agent_id not in AGENT_DEFS:
             self._run_command(raw_task)
             return
-        if not task and not continue_requested:
+        resume_requested = continue_requested or explicit_resume_id is not None
+        if not task and not resume_requested:
             self._new_tab(
                 agent_id,
                 f"Falta la tarea después de «{parts[0]}».",
@@ -613,6 +621,7 @@ class AgentConsolePanel(QWidget):
             )
             return
         self.current_agent_id = agent_id
+        self._copilot_usage_output_file = None
         self._current_task = task
         if agent_id == "copilot":
             self._copilot_allow_all_paths = allow_all_paths
@@ -638,7 +647,7 @@ class AgentConsolePanel(QWidget):
         prompt = task
         resume_id = None
         if continue_requested:
-            resume_id = self._resume_id_from_current_tab()
+            resume_id = explicit_resume_id or self._resume_id_from_current_tab()
             if not resume_id:
                 self._new_tab(
                     agent_id,
@@ -662,6 +671,13 @@ class AgentConsolePanel(QWidget):
             ]
             if continue_requested:
                 argv.extend([f"--resume={resume_id}"])
+                if not task:
+                    for index in range(len(argv) - 1, 0, -1):
+                        if argv[index] == "" and argv[index - 1] in ("-p", "--prompt"):
+                            del argv[index - 1:index + 1]
+                            break
+            elif explicit_resume_id:
+                argv.extend([f"--resume={explicit_resume_id}"])
                 if not task:
                     for index in range(len(argv) - 1, 0, -1):
                         if argv[index] == "" and argv[index - 1] in ("-p", "--prompt"):
@@ -695,6 +711,8 @@ class AgentConsolePanel(QWidget):
                 finished=True,
             )
             return
+        if agent_id == "copilot":
+            argv = self._attach_copilot_usage_output(argv)
         if agent_id == "gemini":
             prompt_for_process = prompt + self._repository_context_for_gemini(prompt)
             argv = [
@@ -704,6 +722,10 @@ class AgentConsolePanel(QWidget):
                 for token in tokens
             ]
         self._start_log(agent_id, folder, " ".join(argv), task)
+        if self._copilot_usage_output_file is not None:
+            self._write_log(
+                f"usage_output_file: {self._copilot_usage_output_file}\n"
+            )
         self._new_tab(
             agent_id,
             "\n",
@@ -738,6 +760,19 @@ class AgentConsolePanel(QWidget):
             return task, False
         return task[: match.start()].rstrip(), True
 
+    @staticmethod
+    def _extract_copilot_resume(task: str) -> tuple[str, str | None]:
+        """Extrae ``--resume=<id>`` para pasarlo como opción real de Copilot."""
+        match = re.search(
+            r"(?:^|\s)--resume(?:=|\s+)([A-Za-z0-9._:-]+)(?=\s|$)",
+            task,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return task, None
+        remaining = (task[: match.start()] + task[match.end():]).strip()
+        return remaining, match.group(1)
+
     def _selected_collection_directory_for_copilot(self) -> list[str]:
         """Devuelve sólo la carpeta seleccionada para ``copilot --add-dir``."""
         folder = self._working_folder()
@@ -745,6 +780,69 @@ class AgentConsolePanel(QWidget):
             return []
         path = Path(folder).expanduser()
         return [str(path.resolve())] if path.is_dir() else []
+
+    def _attach_copilot_usage_output(self, argv: list[str]) -> list[str]:
+        """Agrega un archivo de métricas fuera del workspace para esta corrida."""
+        cleaned = []
+        index = 0
+        while index < len(argv):
+            if argv[index] == "--usage-output-file":
+                index += 2
+                continue
+            if argv[index].startswith("--usage-output-file="):
+                index += 1
+                continue
+            cleaned.append(argv[index])
+            index += 1
+
+        profile_id = self._profile_id() or "unknown-profile"
+        output_dir = COPILOT_USAGE_DIR / profile_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        output_file = output_dir / f"{timestamp}_copilot.json"
+        self._copilot_usage_output_file = output_file
+        cleaned.extend(["--usage-output-file", str(output_file)])
+        return cleaned
+
+    def _record_copilot_usage(self):
+        """Registra métricas finales en el log sin copiar datos sensibles."""
+        usage_file = self._copilot_usage_output_file
+        if self.current_agent_id != "copilot" or usage_file is None:
+            return
+        if not usage_file.is_file():
+            self._write_log(
+                f"\n--- Copilot no generó estadísticas: {usage_file} ---\n"
+            )
+            return
+        try:
+            usage = json.loads(usage_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            self._write_log(
+                f"\n--- No se pudieron leer estadísticas de Copilot: {exc} ---\n"
+            )
+            return
+        if not isinstance(usage, dict):
+            self._write_log(
+                "\n--- Estadísticas de Copilot con formato inesperado ---\n"
+            )
+            return
+        selected = {
+            key: usage[key]
+            for key in (
+                "ai_credits",
+                "duration",
+                "model",
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+            )
+            if key in usage
+        }
+        self._write_log(
+            "\n=== Estadísticas de Copilot ===\n"
+            + json.dumps(selected, ensure_ascii=True, sort_keys=True)
+            + "\n"
+        )
 
     def _resume_id_from_current_tab(self) -> str | None:
         """Extrae el identificador de resume de la pestaña de consola activa."""
@@ -1129,6 +1227,7 @@ class AgentConsolePanel(QWidget):
         if output:
             output.appendPlainText(f"\n--- terminó (código {exit_code}) ---")
         self._write_log(f"\n--- terminó (código {exit_code}) ---\n")
+        self._record_copilot_usage()
         run_kind = self.current_run_kind
         result = output.toPlainText() if output else ""
         if run_kind == "agent" and exit_code == 0:
