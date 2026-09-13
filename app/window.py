@@ -15,12 +15,17 @@ from datetime import datetime
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QToolBar, QTabWidget,
-    QMessageBox, QLabel, QFileDialog, QComboBox, QTreeWidget
+    QMessageBox, QLabel, QFileDialog, QComboBox, QTreeWidget,
+    QDialog
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineDownloadRequest
-from PyQt6.QtCore import Qt, QUrl, QMimeData, QEvent, QTimer, QThread
-from PyQt6.QtGui import QAction, QKeySequence, QKeyEvent, QShortcut
+from PyQt6.QtCore import (
+    Qt, QUrl, QMimeData, QEvent, QTimer, QThread, QCoreApplication
+)
+from PyQt6.QtGui import (
+    QAction, QKeySequence, QKeyEvent, QShortcut, QGuiApplication
+)
 
 from core.file_ops import GitVersioning
 from core.profiles import ProfileManager, ProfileWindowMixin
@@ -33,6 +38,7 @@ from agents.ai_manager import AgentConfigStore
 from agents.agent_console import AgentConsolePanel
 from agents.agent_runs import attach_bridge, render_agent_runs_page
 from app.package_script_tab import PackageScriptTab
+from app.linkedin_dialog import LinkedInPublishDialog
 from app.cdp_har import CdpHarWorker
 from web_common.json_store import SidebarAppsStore
 from web_common.history import HistoryDialog, HistoryStore
@@ -107,6 +113,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         self._har_output_path = None
         self._pending_har_tab_close = None
         self._closing_wait_for_agents = False
+        self._linkedin_tabs = set()
 
         self._setup_ui()
         self._setup_status_bar()
@@ -993,6 +1000,13 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         self._close_tab_now(index)
 
     def _close_tab_now(self, index):
+        widget = self.tabs.widget(index)
+        if widget is not None:
+            self._linkedin_tabs.discard(id(widget))
+            if hasattr(widget, "_linkedin_text"):
+                widget._linkedin_text = ""
+            if hasattr(widget, "_linkedin_paste_started"):
+                widget._linkedin_paste_started = False
         close_shared_tab(
             self.tabs,
             index,
@@ -1053,6 +1067,10 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         agents_action = QAction("Agentes IA...", self)
         agents_action.triggered.connect(lambda: self._open_ai_manager(self.current_profile_id))
         view_menu.addAction(agents_action)
+        linkedin_action = QAction("Publicar en LinkedIn...", self)
+        linkedin_action.setToolTip("Abrir LinkedIn y publicar desde un perfil elegido")
+        linkedin_action.triggered.connect(self._open_linkedin_publish_dialog)
+        view_menu.addAction(linkedin_action)
         agent_runs_action = QAction("Historial de agentes...", self)
         agent_runs_action.setToolTip("Abrir el historial de ejecuciones de Copilot")
         agent_runs_action.triggered.connect(self._open_agent_runs)
@@ -1072,6 +1090,277 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         har_action.triggered.connect(self._toggle_har_capture)
         view_menu.addAction(har_action)
         self._har_action = har_action
+
+    def _open_linkedin_publish_dialog(self):
+        dialog = LinkedInPublishDialog(
+            self.profile_manager.profiles,
+            self.current_profile_id,
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        profile_id, text = dialog.values()
+        if not text:
+            QMessageBox.warning(
+                self, "Publicar en LinkedIn", "Escribí un texto para publicar."
+            )
+            return
+        webview = self._add_tab(profile_id=profile_id)
+        self._linkedin_tabs.add(id(webview))
+        webview._linkedin_text = text
+        webview._linkedin_paste_started = False
+        webview.loadFinished.connect(
+            lambda ok, view=webview: self._publish_linkedin_in_tab(view, ok)
+        )
+        webview.setUrl(QUrl("https://www.linkedin.com/feed/?shareActive=true"))
+        profile = self.profile_manager.get_profile(profile_id) or {}
+        self.statusBar().showMessage(
+            f"LinkedIn abierto con el perfil {profile.get('name', profile_id)}.",
+            6000,
+        )
+
+    def _publish_linkedin_in_tab(self, webview, ok: bool, attempt: int = 0):
+        if (
+            id(webview) not in self._linkedin_tabs
+            or not getattr(webview, "_linkedin_text", "")
+        ):
+            return
+        if not ok:
+            if attempt < 40:
+                QTimer.singleShot(
+                    750,
+                    lambda: self._publish_linkedin_in_tab(
+                        webview, True, attempt + 1
+                    ),
+                )
+            return
+        if attempt >= 40:
+            self.statusBar().showMessage(
+                "No se encontró el cuadro de publicación de LinkedIn.",
+                8000,
+            )
+            return
+        script = """
+            (() => {
+              const elements = [];
+              const collect = root => {
+                const descendants = [...root.querySelectorAll('*')];
+                elements.push(...descendants);
+                descendants.forEach(item => {
+                  if (item.shadowRoot) collect(item.shadowRoot);
+                });
+              };
+              collect(document);
+              const editors = elements.filter(item =>
+                item.matches(
+                  '.ql-editor, [contenteditable], [role="textbox"], textarea, input[type="text"]'
+                )
+              );
+              const editor = editors.find(item =>
+                (item.offsetWidth || item.offsetHeight) &&
+                !item.hasAttribute('readonly') &&
+                !item.disabled &&
+                item.getAttribute('aria-hidden') !== 'true'
+              );
+              if (!editor) {
+                const labels = [
+                  'crear publicación',
+                  'crear una publicación',
+                  'iniciar una publicación'
+                ];
+                const button = elements.find(item => {
+                  if (!item.matches('button, [role="button"]')) return false;
+                  const text = (
+                    item.innerText || item.getAttribute('aria-label') || ''
+                  ).trim().toLowerCase();
+                  return (item.offsetWidth || item.offsetHeight) &&
+                    labels.some(label => text === label || text.includes(label));
+                });
+                if (!button) return false;
+                button.click();
+                return false;
+              }
+              editor.focus();
+              editor.click();
+              return true;
+            })()
+        """
+        webview.page().runJavaScript(
+            script,
+            lambda ready, view=webview: self._paste_linkedin_text(
+                view, ready, attempt
+            ),
+        )
+
+    def _paste_linkedin_text(self, webview, ready: bool, attempt: int):
+        if id(webview) not in self._linkedin_tabs:
+            return
+        if not ready and attempt < 40:
+            QTimer.singleShot(
+                500,
+                lambda: self._publish_linkedin_in_tab(webview, True, attempt + 1),
+            )
+            return
+        if not ready:
+            return
+        if getattr(webview, "_linkedin_paste_started", False):
+            self._confirm_linkedin_paste(webview, 0)
+            return
+        webview._linkedin_paste_started = True
+        clipboard = QGuiApplication.clipboard()
+        clipboard.setText(webview._linkedin_text)
+        target = webview.focusProxy() or webview
+        target.setFocus(Qt.FocusReason.OtherFocusReason)
+        QCoreApplication.processEvents()
+        press = QKeyEvent(
+            QEvent.Type.KeyPress,
+            Qt.Key.Key_V,
+            Qt.KeyboardModifier.ControlModifier,
+            "\x16",
+        )
+        release = QKeyEvent(
+            QEvent.Type.KeyRelease,
+            Qt.Key.Key_V,
+            Qt.KeyboardModifier.ControlModifier,
+            "\x16",
+        )
+        QApplication.postEvent(target, press)
+        QApplication.postEvent(target, release)
+        QCoreApplication.processEvents()
+        QTimer.singleShot(
+            1000,
+            lambda: self._confirm_linkedin_paste(webview, 0),
+        )
+
+    def _confirm_linkedin_paste(self, webview, attempt: int):
+        if id(webview) not in self._linkedin_tabs:
+            return
+        expected = json.dumps(webview._linkedin_text)
+        script = f"""
+            (() => {{
+              const elements = [];
+              const collect = root => {{
+                const descendants = [...root.querySelectorAll('*')];
+                elements.push(...descendants);
+                descendants.forEach(item => {{
+                  if (item.shadowRoot) collect(item.shadowRoot);
+                }});
+              }};
+              collect(document);
+              const editors = elements.filter(item => item.matches(
+                '.share-creation-state__text-editor .ql-editor, ' +
+                '.ql-editor, [contenteditable], [role="textbox"], textarea, input[type="text"]'
+              )).filter(item =>
+                (item.offsetWidth || item.offsetHeight) &&
+                !item.hasAttribute('readonly') &&
+                !item.disabled &&
+                item.getAttribute('aria-hidden') !== 'true'
+              );
+              const editor = editors.find(item =>
+                item.matches('.share-creation-state__text-editor .ql-editor')
+              ) || editors.find(item =>
+                (item.innerText || item.textContent || '').trim()
+              ) || editors[0];
+              if (!editor) return false;
+              const actual = (editor.innerText || editor.textContent || '')
+                .replace(/\\s+/g, ' ')
+                .trim();
+              const wanted = {expected}.replace(/\\s+/g, ' ').trim();
+              return actual.includes(wanted);
+            }})()
+        """
+        webview.page().runJavaScript(
+            script,
+            lambda pasted, view=webview: self._linkedin_paste_result(
+                view, pasted, attempt
+            ),
+        )
+
+    def _linkedin_paste_result(self, webview, pasted: bool, attempt: int):
+        if id(webview) not in self._linkedin_tabs:
+            return
+        if pasted:
+            self._click_linkedin_post(webview, True, 0)
+            return
+        if attempt >= 10:
+            self._click_linkedin_post(webview, True, 0)
+            return
+        QTimer.singleShot(
+            300,
+            lambda: self._confirm_linkedin_paste(webview, attempt + 1),
+        )
+
+    def _click_linkedin_post(self, webview, filled: bool, attempt: int):
+        if id(webview) not in self._linkedin_tabs:
+            return
+        if not filled:
+            if attempt < 40:
+                QTimer.singleShot(
+                    500,
+                    lambda: self._publish_linkedin_in_tab(
+                        webview, True, attempt + 1
+                    ),
+                )
+            return
+        script = """
+            (() => {
+              const elements = [];
+              const collect = root => {
+                const descendants = [...root.querySelectorAll('*')];
+                elements.push(...descendants);
+                descendants.forEach(item => {
+                  if (item.shadowRoot) collect(item.shadowRoot);
+                });
+              };
+              collect(document);
+              const visible = item => !!(item.offsetWidth || item.offsetHeight);
+              const buttons = elements.filter(item => item.matches(
+                'button, [role="button"], input[type="button"], input[type="submit"]'
+              ));
+              const button = buttons.find(item => {
+                const text = (
+                  item.innerText || item.value ||
+                  item.getAttribute('aria-label') || ''
+                ).trim().toLowerCase();
+                return visible(item) &&
+                  !item.disabled &&
+                  item.getAttribute('aria-disabled') !== 'true' &&
+                  (text === 'post' || text === 'publicar' ||
+                   text.includes('post now') ||
+                   /post|publicar/i.test(
+                     item.getAttribute('data-test-id') || ''
+                   ));
+              });
+              if (!button) return false;
+              button.click();
+              return true;
+            })()
+        """
+        webview.page().runJavaScript(
+            script,
+            lambda posted, view=webview: self._linkedin_post_result(
+                view, posted, attempt
+            ),
+        )
+
+    def _linkedin_post_result(self, webview, posted: bool, attempt: int):
+        if id(webview) not in self._linkedin_tabs:
+            return
+        if posted:
+            webview._linkedin_text = ""
+            webview._linkedin_paste_started = False
+            self.statusBar().showMessage("Publicación enviada en LinkedIn.", 8000)
+            return
+        if attempt < 40:
+            QTimer.singleShot(
+                500,
+                lambda: self._click_linkedin_post(webview, True, attempt + 1),
+            )
+        else:
+            self.statusBar().showMessage(
+                "El texto quedó escrito, pero no se encontró el botón Publicar.",
+                8000,
+            )
 
     def _toggle_har_capture(self):
         if self._har_worker is not None:
