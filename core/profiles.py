@@ -20,10 +20,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QUrl, QTimer
 
 from core.file_ops import GitVersioning
-from core.paths import BROWSER_DATA_DIR, IA_DATA_DIR
+from core.paths import IA_DATA_DIR
 from web_common.tabs import keep_plus_tab_last
-
-MINIBROWSER_PROFILE_DIR = BROWSER_DATA_DIR / "profile"
 
 
 # ======================================================================
@@ -64,7 +62,7 @@ class ProfileManager:
             self.profiles.append(entry)
             self.save_profiles()
         else:
-            self._sync_default_with_minibrowser_profile()
+            self._sync_default_profile_storage()
             self._migrate_shared_files_dir()
             self.save_profiles()
 
@@ -91,7 +89,7 @@ class ProfileManager:
         for profile in self.profiles:
             profile["files_dir"] = directory
 
-    def _sync_default_with_minibrowser_profile(self):
+    def _sync_default_profile_storage(self):
         default = None
         for profile in self.profiles:
             if profile.get("is_default"):
@@ -102,8 +100,9 @@ class ProfileManager:
             default["is_default"] = True
         if default is None:
             return
-        storage_path = MINIBROWSER_PROFILE_DIR
-        cache_path = MINIBROWSER_PROFILE_DIR / "cache"
+        profile_root = self.profiles_dir / default["id"]
+        storage_path = profile_root / "storage"
+        cache_path = profile_root / "cache"
         storage_path.mkdir(parents=True, exist_ok=True)
         cache_path.mkdir(parents=True, exist_ok=True)
         default["storage_path"] = str(storage_path)

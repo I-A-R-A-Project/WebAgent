@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import QApplication
 
 try:
     from app.window import IABrowser
+    from web_common.instance import acquire_browser_instance
 except ModuleNotFoundError as exc:
     if exc.name == "web_common" or "web_common" in str(exc):
         print(
@@ -41,10 +42,18 @@ def main():
     app.setApplicationName("WebAgent")
     app.setApplicationVersion("4.0")
 
+    instance_server = acquire_browser_instance()
+    if instance_server is None:
+        return
+
     window = IABrowser()
+    instance_server.set_handler(window.open_instance_popup)
     window.show()
 
-    sys.exit(app.exec())
+    try:
+        sys.exit(app.exec())
+    finally:
+        instance_server.close()
 
 
 if __name__ == "__main__":

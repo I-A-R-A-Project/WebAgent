@@ -967,8 +967,29 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         )
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         window.setWindowTitle("Herramientas de desarrollador — Chromium")
-        window.resize(1100, 760)
         window.current_view().setUrl(QUrl("http://localhost:9222"))
+        self._devtools_windows.append(window)
+        window.destroyed.connect(
+            lambda _obj=None, item=window: (
+                self._devtools_windows.remove(item)
+                if item in self._devtools_windows else None
+            )
+        )
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def open_instance_popup(self, url=""):
+        """Abre una ventana con pestañas para una nueva ejecución del navegador."""
+        window = TabbedPopupWindow(
+            self._get_qt_profile(self.profile_manager.get_default_profile_id()),
+            folder_view_handler=self._render_folder_view,
+            file_view_handler=folder_viewer.render_file_view,
+            special_local_handler=self.handle_special_local_file,
+        )
+        window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        if url:
+            window.current_view().setUrl(QUrl(url))
         self._devtools_windows.append(window)
         window.destroyed.connect(
             lambda _obj=None, item=window: (
