@@ -77,6 +77,8 @@ from web_common.web_profiles import build_web_profile
 class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
     """Navegador con pestañas, perfiles y Colecciones."""
 
+    _GOOGLE_LOGIN_COMPLETION_URL = "https://accounts.google.com/gsi/transform"
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("WebAgent")
@@ -883,6 +885,8 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         return True
 
     def _on_tab_url_changed(self, webview, url: QUrl):
+        if self._close_completed_google_login_popup(webview, url):
+            return
         fragment = url.fragment()
         if fragment.startswith("cancel:"):
             task_id = fragment.split(":", 1)[1]
@@ -940,6 +944,35 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             extra_callback=self._refresh_collection_icon,
         )
 
+    def _close_completed_google_login_popup(self, webview, url: QUrl) -> bool:
+        """Cierra un popup de autenticación de Google ya completado.
+
+        La URL ``gsi/transform`` se usa como destino final del flujo de
+        autenticación. Sólo se cierra una ventana distinta de la principal y
+        que todavía tenga una única pestaña, para no afectar la navegación
+        normal ni la ventana principal del navegador.
+        """
+        if url.toString().rstrip("/") != self._GOOGLE_LOGIN_COMPLETION_URL:
+            return False
+
+        window = webview.window()
+        if window is self:
+            return False
+
+        tabs = getattr(window, "tabs", None)
+        if tabs is None:
+            return False
+
+        plus_widget = getattr(window, "plus_widget", None)
+        content_tab_count = tabs.count()
+        if plus_widget is not None and tabs.indexOf(plus_widget) >= 0:
+            content_tab_count -= 1
+        if content_tab_count != 1:
+            return False
+
+        QTimer.singleShot(0, window.close)
+        return True
+
     def _record_history(self, webview, ok):
         url = webview.url()
         if not ok or url.isEmpty() or url.toString() in ("about:blank", "about:srcdoc"):
@@ -986,10 +1019,18 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             folder_view_handler=self._render_folder_view,
             file_view_handler=folder_viewer.render_file_view,
             special_local_handler=self.handle_special_local_file,
+            new_tab_content_handler=lambda: render_new_tab_page(
+                TaskManager(self.profile_manager.get_default_profile_id()).tasks
+            ),
         )
         window.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        current_view = window.current_view()
+        current_view.urlChanged.connect(
+            lambda changed_url, view=current_view:
+                self._close_completed_google_login_popup(view, changed_url)
+        )
         if url:
-            window.current_view().setUrl(QUrl(url))
+            current_view.setUrl(QUrl(url))
         self._devtools_windows.append(window)
         window.destroyed.connect(
             lambda _obj=None, item=window: (

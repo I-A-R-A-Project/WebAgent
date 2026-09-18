@@ -693,6 +693,8 @@ class AgentConsolePanel(QWidget):
                 token for token in argv
                 if token not in ("--allow-all-paths", "--allow-all")
             ]
+            if "--allow-all-urls" not in argv:
+                argv.append("--allow-all-urls")
             if continue_requested:
                 argv.extend([f"--resume={resume_id}"])
                 if not task:

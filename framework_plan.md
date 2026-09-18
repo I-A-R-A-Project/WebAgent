@@ -31,7 +31,7 @@ cambios Git, perfiles y aprobación de acciones.
   por carpeta, opciones CLI, perfiles, ramas y el diálogo de configuración.
 - `core/task_manager.py` persiste tareas JSON por perfil y clasifica Colecciones
   opcionalmente mediante Gemini.
-- `scripts/gemini_agent.py` y `scripts/groq_agent.py` son adaptadores simples
+- `agents/gemini_agent.py` y `agents/groq_agent.py` son adaptadores simples
   de API que imprimen una respuesta y terminan.
 - `core/file_ops.py` centraliza operaciones Git, detección de repositorio, ramas,
   estado limpio, commits y contexto de ejecución.
@@ -179,8 +179,8 @@ Implementaciones iniciales:
 - `CodexCliProvider`: conserva la limpieza de commits y las restricciones de
   rama existentes.
 - `GeminiProvider`: extrae el cliente HTTP de `task_manager.py` y
-  `scripts/gemini_agent.py` a una implementación reutilizable.
-- `GroqProvider`: extrae el cliente HTTP de `scripts/groq_agent.py` y
+  `agents/gemini_agent.py` a una implementación reutilizable.
+- `GroqProvider`: extrae el cliente HTTP de `agents/groq_agent.py` y
   normaliza respuestas compatibles con OpenAI.
 
 La selección de proveedor debe vivir en configuración por carpeta/Colección,

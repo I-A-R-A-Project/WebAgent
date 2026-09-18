@@ -112,15 +112,22 @@ Copilot CLI corre dentro de WebAgent mediante una terminal integrada.
 La separación de credenciales depende del almacenamiento usado por Copilot CLI.
 WebAgent no guarda tokens propios ni copia credenciales entre perfiles.
 
-### Gemini y Groq
+### Gemini, Groq y OpenRouter
 
-Gemini y Groq aparecen en **Agentes IA** como proveedores opcionales. Gemini
-usa la API de Google AI Studio y Groq usa su API compatible con OpenAI; ambos
-ejecutan prompts sin modificar archivos por sí mismos. Las API keys se guardan
-por perfil en la configuración local de agentes.
+Gemini, Groq y OpenRouter aparecen en **Agentes IA** como proveedores
+opcionales. Gemini usa la API de Google AI Studio; Groq y OpenRouter usan
+APIs compatibles con OpenAI. Ejecutan prompts sin modificar archivos por sí
+mismos. Las API keys se guardan por perfil en la configuración local de
+agentes.
 
 - Gemini: `GEMINI_API_KEY` — https://aistudio.google.com/u/3/docs
 - Groq: `GROQ_API_KEY` — https://console.groq.com/docs/overview
+- OpenRouter: `OPENROUTER_API_KEY` — https://openrouter.ai/docs/
+
+OpenRouter usa `openrouter/auto` por defecto. Se puede elegir otro modelo
+mediante `OPENROUTER_MODEL` o agregando `--model` al comando del agente. El
+cliente independiente también está disponible como
+`python agents/openrouter_agent.py --prompt "..."`.
 
 ### Refactors estructurales
 

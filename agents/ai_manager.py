@@ -76,7 +76,7 @@ AGENT_DEFS = {
         "label": "🤖 Copilot — Ejecutor principal",
         "short_label": "Copilot",
         "description": "Ejecutor AI: puede leer y modificar código y documentación, generar commits atómicos y ejecutar verificaciones de proyecto.",
-        "default_command": 'copilot -p "{prompt}" --allow-all-tools',
+        "default_command": 'copilot -p "{prompt}" --allow-all-tools --allow-all-urls',
         "needs_task": False,
         "needs_source_branch": True,
         "prompt_template": "",
@@ -87,7 +87,7 @@ AGENT_DEFS = {
         "label": "✨ Gemini — Google AI Studio",
         "short_label": "Gemini",
         "description": "Consulta los modelos Gemini directamente mediante la API de Google AI Studio.",
-        "default_command": 'python "{script_dir}/scripts/gemini_agent.py" --prompt "{prompt}"',
+        "default_command": 'python "{script_dir}/gemini_agent.py" --prompt "{prompt}"',
         "needs_task": False,
         "needs_source_branch": False,
         "prompt_template": "",
@@ -98,17 +98,28 @@ AGENT_DEFS = {
         "label": "⚡ Groq — Inferencia rápida",
         "short_label": "Groq",
         "description": "Consulta modelos open source mediante la API compatible con OpenAI de Groq.",
-        "default_command": 'python "{script_dir}/scripts/groq_agent.py" --prompt "{prompt}"',
+        "default_command": 'python "{script_dir}/groq_agent.py" --prompt "{prompt}"',
         "needs_task": False,
         "needs_source_branch": False,
         "prompt_template": "",
         "check_binary": "python",
         "install_hint": "requiere Python y una API key de Groq (https://console.groq.com/docs/overview)",
     },
+    "openrouter": {
+        "label": "🌐 OpenRouter — Modelos múltiples",
+        "short_label": "OpenRouter",
+        "description": "Consulta modelos de distintos proveedores mediante la API compatible con OpenAI de OpenRouter.",
+        "default_command": 'python "{script_dir}/openrouter_agent.py" --prompt "{prompt}"',
+        "needs_task": False,
+        "needs_source_branch": False,
+        "prompt_template": "",
+        "check_binary": "python",
+        "install_hint": "requiere Python y una API key de OpenRouter (https://openrouter.ai/docs/)",
+    },
 
 }
 
-AGENT_ORDER = ["gemini", "copilot", "codex", "groq"]
+AGENT_ORDER = ["gemini", "copilot", "codex", "groq", "openrouter"]
 
 
 # ======================================================================
@@ -353,6 +364,7 @@ class AIAgentsDialog(QDialog):
         for name in (
             "COPILOT_HOME", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN",
             "GEMINI_API_KEY", "GROQ_API_KEY",
+            "OPENROUTER_API_KEY",
         ):
             environment.remove(name)
         environment.insert("COPILOT_HOME", str(self.copilot_home))
@@ -368,6 +380,8 @@ class AIAgentsDialog(QDialog):
                 environment.insert("GEMINI_API_KEY", token)
             elif agent_id == "groq":
                 environment.insert("GROQ_API_KEY", token)
+            elif agent_id == "openrouter":
+                environment.insert("OPENROUTER_API_KEY", token)
         return environment
 
     def _open_copilot_auth_url(self, text):
@@ -407,7 +421,7 @@ class AIAgentsDialog(QDialog):
             self.profile_changed_handler(selected)
 
     def _refresh_profile_credentials(self):
-        for agent_id in ("copilot", "gemini", "groq"):
+        for agent_id in ("copilot", "gemini", "groq", "openrouter"):
             widgets = self.agent_widgets.get(agent_id)
             if not widgets or "token_edit" not in widgets:
                 continue
@@ -627,12 +641,12 @@ class AIAgentsDialog(QDialog):
         tab_layout.addLayout(form)
 
         btn_row = QHBoxLayout()
-        if agent_id in ("copilot", "codex", "gemini", "groq"):
+        if agent_id in ("copilot", "codex", "gemini", "groq", "openrouter"):
             help_btn = QPushButton("❔ Ver ayuda en la consola")
             help_btn.clicked.connect(lambda: self._show_cli_help(agent_id))
             btn_row.addWidget(help_btn)
 
-        if agent_id in ("copilot", "gemini", "groq"):
+        if agent_id in ("copilot", "gemini", "groq", "openrouter"):
             token_edit = QLineEdit(
                 self.config_store.get_profile_agent_token(
                     self.folder, self.profile_id, agent_id
@@ -667,7 +681,7 @@ class AIAgentsDialog(QDialog):
         }
         if max_credits is not None:
             self.agent_widgets[agent_id]["max_credits"] = max_credits
-        if agent_id in ("copilot", "gemini", "groq"):
+        if agent_id in ("copilot", "gemini", "groq", "openrouter"):
             self.agent_widgets[agent_id]["token_edit"] = token_edit
 
         if agent_id == "copilot":
@@ -844,7 +858,7 @@ class AIAgentsDialog(QDialog):
         # ya armado con comillas), para que Qt aplique su propio
         # escapado una sola vez por argumento, evitando el anidamiento
         # de comillas que rompía el prompt antes.
-        if agent_id in ("copilot", "gemini", "groq"):
+        if agent_id in ("copilot", "gemini", "groq", "openrouter"):
             self.process.setProcessEnvironment(self._agent_environment(agent_id))
 
         # If preview mode, ensure we run on the preview branch (already checked out)
