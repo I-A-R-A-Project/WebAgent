@@ -339,6 +339,7 @@
   }
   .run-meta{display:flex;gap:10px;font-size:11px;color:var(--muted-2);font-family:var(--mono);}
   .empty-list{padding:30px 16px;color:var(--muted);font-size:12.5px;text-align:center;}
+  .list-sentinel{height:1px;}
 
   /* ---------- detail pane ---------- */
   .detail{
@@ -1179,82 +1180,128 @@ function permanentlyDeleteRun(filename){
   });
 }
 
+/* La lista se pinta de a páginas (LIST_PAGE_SIZE corridas por vez) y el
+   resto se agrega recién cuando el usuario scrollea cerca del final
+   (IntersectionObserver sobre un sentinel al pie). Esto es lo que evita
+   que, con miles de corridas filtradas, cada búsqueda/click tenga que
+   reconstruir miles de nodos del DOM de una sola vez. Los clicks (elegir
+   corrida, papelera, restaurar) se manejan por delegación de eventos en
+   el contenedor, así no hace falta re-atar listeners en cada página. */
+const LIST_PAGE_SIZE = 150;
+let listSnapshot = [];
+let listCursor = 0;
+let listLastDay = null;
+let listDayLabel = "";
+let listDayBuffer = "";
+let listObserver = null;
+
+function runCardHtml(r){
+  const title = r.taskText.split("\n")[0].slice(0,110);
+  return `
+    <div class="run-card ${r.filename===activeId?'active':''}" data-id="${escapeHtml(r.filename)}">
+      <div class="run-card-head">
+        <div class="run-top">
+          <span class="badge ${r.status}"></span>
+          <span class="run-time">${fmtTime(r.started)}</span>
+          <span class="run-branch">${escapeHtml(r.branch)}</span>
+        </div>
+        <div class="run-actions">
+          ${showDeleted ? '<button class="run-restore" type="button" title="Restaurar corrida">↩</button>' : ""}
+          ${showDeleted ? '<button class="run-trash permanent-trash" type="button" title="Eliminar definitivamente el log">🗑️</button>' : '<button class="run-trash" type="button" title="Enviar a la papelera">🗑️</button>'}
+        </div>
+      </div>
+      <div class="run-title">${escapeHtml(title)}</div>
+      <div class="run-meta">
+        ${r.profileName ? `<span>${escapeHtml(r.profileName)}</span>` : ""}
+        ${r.credits ? `<span>${r.credits.amount.toFixed(2)} cr</span>` : ""}
+        ${r.changes ? `<span>+${r.changes.added} -${r.changes.removed}</span>` : ""}
+      </div>
+    </div>`;
+}
+
 function renderList(){
-  const list = filteredSorted();
+  listSnapshot = filteredSorted();
+  listCursor = 0;
+  listLastDay = null;
+  listDayLabel = "";
+  listDayBuffer = "";
   const el = document.getElementById('runlist');
-  if(list.length===0){
+  if(listObserver){ listObserver.disconnect(); listObserver = null; }
+  if(listSnapshot.length === 0){
     el.innerHTML = '<div class="empty-list">No hay corridas que coincidan con el filtro.</div>';
     return;
   }
-  let html = "";
-  let lastDay = null;
-  const groupedByDay = sortOrder === 'new' || sortOrder === 'old';
-  let dayCards = "";
-  let dayLabel = "";
-  const closeDay = () => {
-    if(!lastDay) return;
-    html += groupedByDay
-      ? `<details class="day-group" open><summary class="day-heading">${escapeHtml(dayLabel)}</summary>${dayCards}</details>`
-      : `<div class="day-heading">${escapeHtml(dayLabel)}</div>${dayCards}`;
-    dayCards = "";
-  };
-  for(const r of list){
-    const dayKey = r.started ? r.started.toDateString() : "none";
-    if(dayKey !== lastDay){
-      closeDay();
-      lastDay = dayKey;
-      dayLabel = fmtDay(r.started);
-    }
-    const title = r.taskText.split("\n")[0].slice(0,110);
-    dayCards += `
-      <div class="run-card ${r.filename===activeId?'active':''}" data-id="${escapeHtml(r.filename)}">
-        <div class="run-card-head">
-          <div class="run-top">
-            <span class="badge ${r.status}"></span>
-            <span class="run-time">${fmtTime(r.started)}</span>
-            <span class="run-branch">${escapeHtml(r.branch)}</span>
-          </div>
-          <div class="run-actions">
-            ${showDeleted ? '<button class="run-restore" type="button" title="Restaurar corrida">↩</button>' : ""}
-            ${showDeleted ? '<button class="run-trash permanent-trash" type="button" title="Eliminar definitivamente el log">🗑️</button>' : '<button class="run-trash" type="button" title="Enviar a la papelera">🗑️</button>'}
-          </div>
-        </div>
-        <div class="run-title">${escapeHtml(title)}</div>
-        <div class="run-meta">
-          ${r.profileName ? `<span>${escapeHtml(r.profileName)}</span>` : ""}
-          ${r.credits ? `<span>${r.credits.amount.toFixed(2)} cr</span>` : ""}
-          ${r.changes ? `<span>+${r.changes.added} -${r.changes.removed}</span>` : ""}
-        </div>
-      </div>`;
-  }
-  closeDay();
-  el.innerHTML = html;
-  el.querySelectorAll('.run-card').forEach(card=>{
-    card.addEventListener('click', event=>{
-      if(event.target.closest('.run-trash')) return;
-      activeId = card.dataset.id;
-      renderList();
-      renderDetail();
-    });
-  });
-  el.querySelectorAll('.run-trash').forEach(button=>{
-    button.addEventListener('click', event=>{
-      event.stopPropagation();
-      const filename = button.closest('.run-card').dataset.id;
-      if(button.classList.contains('permanent-trash')){
-        permanentlyDeleteRun(filename);
-      }else{
-        toggleRunDeleted(filename);
-      }
-    });
-  });
-  el.querySelectorAll('.run-restore').forEach(button=>{
-    button.addEventListener('click', event=>{
-      event.stopPropagation();
-      toggleRunDeleted(button.closest('.run-card').dataset.id);
-    });
-  });
+  el.innerHTML = "";
+  appendListPage();
 }
+
+function appendListPage(){
+  const el = document.getElementById('runlist');
+  const groupedByDay = sortOrder === 'new' || sortOrder === 'old';
+  const slice = listSnapshot.slice(listCursor, listCursor + LIST_PAGE_SIZE);
+  let html = "";
+  const closeDay = () => {
+    if(!listLastDay) return;
+    html += groupedByDay
+      ? `<details class="day-group" open><summary class="day-heading">${escapeHtml(listDayLabel)}</summary>${listDayBuffer}</details>`
+      : `<div class="day-heading">${escapeHtml(listDayLabel)}</div>${listDayBuffer}`;
+    listDayBuffer = "";
+  };
+  for(const r of slice){
+    const dayKey = r.started ? r.started.toDateString() : "none";
+    if(dayKey !== listLastDay){
+      closeDay();
+      listLastDay = dayKey;
+      listDayLabel = fmtDay(r.started);
+    }
+    listDayBuffer += runCardHtml(r);
+  }
+  listCursor += slice.length;
+  const hasMore = listCursor < listSnapshot.length;
+  if(!hasMore){
+    closeDay();
+  }else{
+    const nextDayKey = listSnapshot[listCursor].started ? listSnapshot[listCursor].started.toDateString() : "none";
+    if(nextDayKey !== listLastDay) closeDay();
+  }
+
+  const oldSentinel = document.getElementById('list-sentinel');
+  if(oldSentinel) oldSentinel.remove();
+  if(html) el.insertAdjacentHTML('beforeend', html);
+
+  if(hasMore){
+    const sentinel = document.createElement('div');
+    sentinel.id = 'list-sentinel';
+    sentinel.className = 'list-sentinel';
+    el.appendChild(sentinel);
+    listObserver = new IntersectionObserver(entries=>{
+      if(entries[0].isIntersecting) appendListPage();
+    }, {root: el, rootMargin: '600px'});
+    listObserver.observe(sentinel);
+  }
+}
+
+// Delegación: un solo listener para toda la lista, sin importar cuántas
+// páginas se hayan agregado.
+document.getElementById('runlist').addEventListener('click', event=>{
+  const card = event.target.closest('.run-card');
+  if(!card) return;
+  const filename = card.dataset.id;
+  const trashBtn = event.target.closest('.run-trash');
+  const restoreBtn = event.target.closest('.run-restore');
+  if(trashBtn){
+    if(trashBtn.classList.contains('permanent-trash')) permanentlyDeleteRun(filename);
+    else toggleRunDeleted(filename);
+    return;
+  }
+  if(restoreBtn){ toggleRunDeleted(filename); return; }
+  if(activeId === filename) return;
+  const prevActive = document.querySelector('#runlist .run-card.active');
+  if(prevActive) prevActive.classList.remove('active');
+  card.classList.add('active');
+  activeId = filename;
+  renderDetail();
+});
 
 function iconFor(item){
   if(item.type==='fail') return {cls:'fail', ch:'✗'};
@@ -1376,11 +1423,6 @@ function renderDetailBodyInto(el, detail){
     <div class="tree-files">${detail.workingTree.map(f=>`<span class="tree-file"><span class="code">${escapeHtml(f.code)}</span>${escapeHtml(f.path)}</span>`).join("")}</div>
   ` : "";
 
-  const summaryHtml = detail.summary ? `
-    <div class="section-label">Resultado final</div>
-    <div class="summary-box">${escapeHtml(detail.summary)}</div>
-  ` : "";
-
   let diffHtml = "";
   if(detail.diffSections && detail.diffSections.length){
     diffHtml = `<div class="section-label">Diff exacto de la ejecución</div>` +
@@ -1421,7 +1463,7 @@ function renderDetailBodyInto(el, detail){
 
   const slot = el.querySelector('.detail-body-slot');
   if(!slot) return;
-  slot.innerHTML = `${treeHtml}${activityHtml}${summaryHtml}${diffHtml}${footerHtml}`;
+  slot.innerHTML = `${treeHtml}${activityHtml}${diffHtml}${footerHtml}`;
 
   const rt = slot.querySelector('.resume-tag');
   if(rt){

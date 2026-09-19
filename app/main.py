@@ -37,12 +37,15 @@ except ModuleNotFoundError as exc:
     raise
 
 
+INSTANCE_SERVER_NAME = "IARA-WebAgent-Instance-v1"
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("WebAgent")
     app.setApplicationVersion("4.0")
 
-    instance_server = acquire_browser_instance()
+    instance_server = acquire_browser_instance(server_name=INSTANCE_SERVER_NAME)
     if instance_server is None:
         return
 

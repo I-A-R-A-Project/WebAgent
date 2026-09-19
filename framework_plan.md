@@ -1,387 +1,267 @@
-# Plan para implementar un framework de agentes en WebAgent
+# Plan de implementación: framework de ciclos para agentes IA
 
 ## 1. Objetivo
 
-Incorporar una capa de orquestación de agentes que permita convertir una tarea
-del usuario en un flujo observable, reanudable y seguro. El framework debe
-coordinar proveedores distintos, herramientas locales y operaciones Git sin
-acoplar la lógica de agentes a la interfaz PyQt6.
+Agregar a WebAgent un flujo guiado para tareas de desarrollo:
 
-El primer caso de uso recomendado es:
+1. El usuario describe una tarea.
+2. Un agente analiza el repositorio y devuelve un plan en Markdown.
+3. WebAgent muestra ese `.md` para que el usuario lo revise.
+4. El usuario puede aprobarlo o pedir cambios.
+5. Al aprobarlo, WebAgent ejecuta ciclos autónomos hasta terminar:
+   - lanza al agente con el plan y el estado actual;
+   - aclara que no debe ejecutar los chequeos locales;
+   - ejecuta los chequeos mediante `autorun`;
+   - si fallan, devuelve los errores al agente para el siguiente ciclo;
+   - si pasan, guarda los cambios en Git y continúa con el siguiente ciclo.
+6. El flujo termina cuando el agente declara que no quedan tareas y los chequeos pasan, o cuando se alcanza un límite/error que requiera intervención.
 
-> recibir una tarea desde la bandeja de tareas, asociarla a una Colección,
-> analizar el repositorio, proponer un plan, ejecutar cambios en una rama de
-> trabajo, ejecutar verificaciones y dejar un resultado revisable.
+El framework debe ser reutilizable por Copilot, Codex y cualquier agente compatible con la configuración existente. La ejecución de verificaciones pertenece a WebAgent, no al agente, para evitar consumir tokens en comandos repetibles y para que todos los agentes usen el mismo criterio.
 
-La implementación debe conservar el comportamiento actual: Copilot y Codex
-siguen pudiendo ejecutarse como CLI, Gemini y Groq siguen funcionando como
-proveedores de consulta, y el usuario mantiene control sobre autenticación,
-cambios Git, perfiles y aprobación de acciones.
+## 2. Alcance y decisiones
 
-## 2. Estado actual del repositorio
+### Incluido
 
-### Componentes existentes relevantes
+- Crear, editar, visualizar y aprobar un plan Markdown.
+- Persistir el plan, su estado, el ciclo actual y el historial de resultados.
+- Ejecutar ciclos secuenciales sobre una carpeta Git.
+- Reutilizar `AgentConsolePanel`, `AgentConfigStore`, `build_autorun_plan`, `validate_autorun_command` y `GitVersioning`.
+- Detectar automáticamente los checks por lenguaje cuando no exista un comando configurado.
+- Configurar un límite de ciclos y permitir pausar, cancelar y reanudar.
+- Mostrar en vivo la salida del agente y de cada check.
+- Commitear solamente después de un ciclo sin errores.
 
-- `app/window.py` conecta la interfaz, las pestañas, las Colecciones, la bandeja
-  de tareas y la consola inferior de agentes.
-- `agents/agent_console.py` ejecuta comandos mediante `QProcess`, transmite salida en
-  vivo, acepta stdin, guarda logs, detecta autenticación de Copilot y ejecuta
-  autorun.
-- `agents/ai_manager.py` contiene `AGENT_DEFS`, plantillas de comandos, configuración
-  por carpeta, opciones CLI, perfiles, ramas y el diálogo de configuración.
-- `core/task_manager.py` persiste tareas JSON por perfil y clasifica Colecciones
-  opcionalmente mediante Gemini.
-- `agents/gemini_agent.py` y `agents/groq_agent.py` son adaptadores simples
-  de API que imprimen una respuesta y terminan.
-- `core/file_ops.py` centraliza operaciones Git, detección de repositorio, ramas,
-  estado limpio, commits y contexto de ejecución.
-- `agents/agent_runs.py` y `agents/agent_runs.html` muestran los logs históricos guardados
-  en `%APPDATA%\IARA\WebAgent\agent_logs`.
-- Los perfiles aíslan almacenamiento del navegador y `COPILOT_HOME`; las API
-  keys y configuraciones se mantienen por carpeta/perfil.
+### Fuera de alcance inicial
 
-### Limitaciones que el framework debe resolver
+- Ejecutar agentes en paralelo sobre el mismo working tree.
+- Hacer `push`, merge o cambiar ramas automáticamente.
+- Permitir que el agente elija o ejecute comandos de shell arbitrarios.
+- Ocultar errores, corregirlos silenciosamente o marcar una tarea como terminada sin verificación.
 
-1. La unidad de ejecución actual es un comando individual; no hay estados,
-   dependencias, reintentos ni checkpoints de un flujo.
-2. `AgentConsolePanel` y el diálogo de agentes contienen lógica parcialmente
-   duplicada para ejecutar procesos, autenticación, autorun y salida.
-3. Los adaptadores de Gemini/Groq no comparten una interfaz de modelo,
-   streaming, conteo de tokens ni errores normalizados.
-4. Las tareas se guardan como JSON con estados básicos (`pending`,
-   `completed`, `cancelled`), sin ejecuciones, eventos, artefactos ni
-   reanudación.
-5. Las herramientas disponibles están implícitas en comandos y prompts; no
-   existe una política central para permisos, rutas, red, Git o aprobación.
-6. El loop de Qt no debe bloquearse con llamadas síncronas de modelos o
-   procesos largos.
+La rama de trabajo será la rama activa del repositorio, respetando la separación actual `master`/`main` cuando la configuración del proyecto la utilice. El framework no debe cambiar de rama si hay cambios sin commitear que puedan mezclarse.
 
-## 3. Evaluación de frameworks
+## 3. Modelo de estados
 
-| Criterio | AutoGen | LangGraph | CrewAI |
-|---|---|---|---|
-| Flujos explícitos y estados | Bueno, orientado a conversaciones entre agentes | Excelente, grafo de estados explícito | Bueno, basado en crews y tasks |
-| Checkpoints y reanudación | Requiere diseñar bastante infraestructura | Capacidad central del enfoque | Más limitado y dependiente de la integración |
-| Human-in-the-loop | Posible, pero hay que modelarlo | Natural mediante interrupciones y estados | Posible, pero menos preciso para workflows complejos |
-| Herramientas y control de permisos | Flexible, requiere convenciones propias | Flexible, fácil de encapsular en nodos | Sencillo para herramientas de agentes |
-| Adaptación a PyQt/QProcess | Requiere puente async/sync | Requiere puente async/sync | Requiere puente async/sync |
-| Proveedores heterogéneos y CLI existentes | Posible | Posible mediante nodos/adaptadores | Posible, con mayor abstracción orientada a roles |
-| Depuración y trazabilidad | Conversaciones pueden ser difíciles de inspeccionar | Cada transición puede quedar como evento/checkpoint | Buena lectura conceptual, menor control fino |
-| Complejidad inicial | Media/alta | Media | Baja/media |
-| Encaje con WebAgent | Parcial: favorece conversación multiagente | Alto: WebAgent necesita workflows controlados | Medio: útil para equipos de agentes, no imprescindible |
-
-### Recomendación
-
-Elegir **LangGraph como motor de orquestación**, con una primera versión
-deliberadamente pequeña y con adaptadores propios para los agentes actuales.
-
-La razón principal no es disponer de más agentes conversando, sino poder
-representar de forma explícita:
-
-- análisis, planificación, ejecución, verificación y revisión;
-- pausas para autenticación, aprobación o conflictos Git;
-- reintentos y rotación de perfiles cuando hay cuota agotada;
-- persistencia y reanudación de una ejecución después de cerrar WebAgent;
-- eventos y artefactos que la interfaz pueda mostrar sin interpretar texto
-  libre del modelo.
-
-**AutoGen** sería una alternativa si el objetivo prioritario fuera una
-conversación dinámica entre varios agentes especializados. **CrewAI** sería
-adecuado para un MVP muy orientado a roles (“investigador”, “programador”,
-“revisor”), pero ofrece menos control que LangGraph sobre el estado durable y
-las pausas operativas que ya necesita WebAgent. No se recomienda incorporar
-los tres: aumentaría dependencias, superficie de configuración y dificultad
-de depuración.
-
-## 4. Arquitectura propuesta
-
-Crear un paquete `agent_framework/` independiente de PyQt:
+Cada ejecución debe tener un identificador y avanzar por una máquina de estados persistible:
 
 ```text
-agent_framework/
-├── __init__.py
-├── models.py          # Run, RunState, AgentMessage, ToolCall, Artifact
-├── graph.py           # construcción del StateGraph y nodos
-├── runtime.py         # ejecución async y puente de cancelación
-├── providers.py       # interfaz común y adaptadores de modelos/CLI
-├── tools.py           # herramientas permitidas y validación de argumentos
-├── checkpoints.py     # persistencia de estado y reanudación
-├── events.py          # eventos tipados para la UI y logs
-├── policies.py        # permisos, límites y aprobación humana
-└── errors.py          # errores normalizados y clasificación de reintentos
+DRAFT
+  -> PLAN_READY
+  -> WAITING_APPROVAL
+  -> REVISION_REQUESTED -> PLAN_READY
+  -> RUNNING_AGENT
+  -> RUNNING_CHECKS
+  -> CHECKS_FAILED -> RUNNING_AGENT
+  -> CHECKS_PASSED -> COMMITTING
+  -> COMMITTED -> RUNNING_AGENT
+  -> COMPLETED
 ```
 
-### Estado mínimo del grafo
+Estados terminales adicionales:
 
-El estado serializable debe contener, como mínimo:
+- `PAUSED`: pausa solicitada por el usuario; conserva el contexto para reanudar.
+- `CANCELLED`: cancelación explícita; no inicia procesos nuevos.
+- `BLOCKED`: falta de agente, repositorio, identidad Git, configuración o permiso.
+- `FAILED`: error irrecuperable del proceso de agente, autorun o persistencia.
 
-```text
-run_id
-task_id
-profile_id
-collection_id
-workspace
-branch
-goal
-plan
-messages
-pending_approval
-tool_results
-changed_files
-verification_results
-retry_count
-status
-error
-created_at / updated_at
+Reglas:
+
+- `RUNNING_AGENT` no puede iniciar si existe otro proceso activo para la misma carpeta.
+- `RUNNING_CHECKS` ejecuta la lista completa en orden; el primer fallo detiene la lista.
+- `COMMITTING` solo es válido con todos los checks exitosos y cambios detectables.
+- `COMPLETED` requiere una respuesta final del agente que indique que la tarea está terminada y una última ejecución exitosa de checks.
+- Un commit creado por el framework no debe iniciar otro ciclo por sí mismo.
+
+## 4. Flujo de usuario y UI
+
+Agregar una entrada “Framework de tarea” desde la consola de agentes o el menú de agentes IA. La vista debe incluir:
+
+- editor de la solicitud original;
+- carpeta/repositorio seleccionado;
+- agente ejecutor;
+- límite máximo de ciclos, con un valor seguro por defecto;
+- botón **Generar plan**;
+- visor/editor del Markdown generado;
+- botones **Pedir cambios**, **Aprobar y ejecutar**, **Pausar** y **Cancelar**;
+- estado actual, número de ciclo, commit producido y último resultado de checks;
+- pestañas de salida para el plan, el agente, los checks y el historial.
+
+Al pedir cambios, el usuario debe ingresar una observación. Esa observación vuelve al agente planificador y genera una nueva versión, sin comenzar la implementación. La aprobación debe ser explícita y quedar registrada con fecha, perfil, agente y hash del estado inicial.
+
+El archivo de plan debe guardarse dentro del directorio de datos de WebAgent o en una ubicación de sesión no versionada por defecto. Solo debe escribirse en el repositorio si el usuario lo solicita; en ese caso usar un nombre configurable, por defecto `framework_plan.md`, y tratarlo como un cambio normal del ciclo.
+
+## 5. Generación y contrato del plan Markdown
+
+El agente planificador debe inspeccionar el repositorio y devolver únicamente el contenido del plan, sin modificar archivos. El documento debe contener:
+
+```markdown
+# Objetivo
+# Contexto y supuestos
+# Archivos a modificar
+# Pasos de implementación
+# Criterios de aceptación verificables
+# Checks esperados
+# Riesgos y decisiones pendientes
 ```
 
-No se deben guardar API keys, cookies, tokens ni el contenido completo de
-sesiones del navegador dentro del checkpoint.
+WebAgent debe validar que la respuesta no esté vacía, conservar el texto original y generar una versión numerada o con timestamp. No debe interpretar texto libre como comandos. Los checks que el agente proponga son información para revisión; la ejecución real sale de la configuración segura de autorun y de la detección local.
 
-### Flujo inicial
+El prompt de planificación debe exigir:
 
-1. `intake`: valida la tarea, perfil, Colección y carpeta de trabajo.
-2. `inspect_repo`: obtiene rama, estado Git, archivos relevantes y límites de
-   contexto sin modificar el repositorio.
-3. `plan`: un modelo produce un plan estructurado y enumera herramientas
-   requeridas.
-4. `approve_plan`: pausa y solicita aprobación si la política lo exige.
-5. `execute`: aplica cambios usando herramientas controladas o delega a
-   Copilot/Codex CLI en la rama autorizada.
-6. `verify`: ejecuta verificaciones permitidas por configuración.
-7. `review`: resume diff, commits, fallos y archivos modificados.
-8. `complete` o `failed`: persiste el resultado y habilita reanudación,
-   reintento o cancelación.
+- inspección del repositorio antes de proponer cambios;
+- pasos pequeños y verificables;
+- no editar archivos ni crear commits durante la planificación;
+- señalar incertidumbres en vez de inventar detalles;
+- criterios claros para declarar la tarea terminada.
 
-Los nodos deben ser deterministas respecto del estado y devolver eventos
-tipados; la UI no debe depender de analizar strings de la salida del modelo
-para saber en qué etapa está una ejecución.
+## 6. Prompt de cada ciclo de implementación
 
-## 5. Adaptación de los agentes actuales
+Cada ciclo debe recibir la solicitud original, la versión aprobada del plan, el número de ciclo, el estado Git relevante y el contexto del ciclo anterior. El prompt debe incluir explícitamente:
 
-Definir una interfaz conceptual común:
+> Implementá el siguiente paso pendiente del plan. No ejecutes chequeos, tests, builds, linters ni comandos de verificación: WebAgent los ejecutará automáticamente al terminar tu ciclo. No hagas el commit; WebAgent lo hará solo si todos los checks pasan. Inspeccioná primero los cambios existentes y no borres trabajo válido.
 
-```python
-class AgentProvider(Protocol):
-    provider_id: str
+En el primer ciclo se omite el contexto de errores. En ciclos posteriores se agrega solo:
 
-    async def invoke(self, request: AgentRequest) -> AgentResponse:
-        ...
+- comando que falló;
+- código de salida;
+- salida relevante, limitada a un tamaño seguro;
+- archivos modificados desde el commit anterior;
+- instrucción de corregir la causa y no repetir el mismo intento sin cambios.
 
-    async def stream(self, request: AgentRequest) -> AsyncIterator[AgentEvent]:
-        ...
+No se debe reenviar automáticamente el log completo, credenciales, tokens, cookies ni archivos no relacionados. Si el agente informa que la tarea está terminada, WebAgent aún debe ejecutar los checks antes de aceptarla.
+
+## 7. Autorun y detección de checks
+
+Reutilizar `core.automation.build_autorun_plan(folder)` como detector inicial y `validate_autorun_command` como barrera de seguridad. La prioridad debe ser:
+
+1. comando explícito configurado para el repositorio;
+2. checks detectados por manifiestos y archivos presentes;
+3. bloqueo claro si no existe ningún check confiable y el repositorio no permite determinar cómo validarse.
+
+La detección debe poder ampliarse por lenguaje sin cambiar el orquestador. Como mínimo contemplar los patrones ya soportados:
+
+- Python: `python -m compileall -q .` y `pytest -q` cuando corresponda;
+- Node: `npm test` si existe el script;
+- Rust: `cargo test --quiet`;
+- Go: `go test ./...`;
+- .NET: `dotnet test --no-restore`;
+- Git: `git diff --check`.
+
+Los checks se ejecutan en secuencia, con `cwd` igual al repositorio, entorno del agente y timeout configurable. Toda salida debe transmitirse a la consola y persistirse. Un comando desconocido, inválido o no permitido es un error de configuración, no un resultado exitoso.
+
+## 8. Commit y continuación
+
+Después de que todos los checks terminen con código cero:
+
+1. refrescar el estado y el diff;
+2. si no hay cambios, no crear un commit vacío;
+3. validar que el repositorio tenga identidad Git;
+4. crear un commit generado por WebAgent, por ejemplo:
+   `chore(framework): complete cycle <n>`;
+5. guardar hash, mensaje, archivos y timestamp;
+6. iniciar el siguiente ciclo con el plan y el nuevo estado.
+
+El agente no debe hacer commits. Si el commit falla, el estado pasa a `BLOCKED` o `FAILED` según la causa y se muestra el error sin iniciar otro ciclo. Nunca hacer `git add -A` fuera del repositorio seleccionado ni incluir credenciales o archivos temporales; la estrategia de staging debe respetar la política Git existente y excluir archivos sensibles.
+
+## 9. Terminación, límites y errores
+
+El agente debe devolver una señal estructurada al final de cada ciclo, preferentemente en un bloque JSON delimitado, con:
+
+```json
+{
+  "status": "continue|complete|blocked",
+  "summary": "resumen breve",
+  "next_steps": ["..."],
+  "criteria_met": ["..."]
+}
 ```
 
-Implementaciones iniciales:
+Si la señal falta o es inválida, tratar el ciclo como `continue` mientras existan cambios y no se haya superado el límite. No confiar únicamente en frases como “terminado”.
 
-- `CopilotCliProvider`: usa `QProcess` detrás de un adaptador async o un
-  worker dedicado; conserva `COPILOT_HOME` por perfil, device flow y rotación.
-- `CodexCliProvider`: conserva la limpieza de commits y las restricciones de
-  rama existentes.
-- `GeminiProvider`: extrae el cliente HTTP de `task_manager.py` y
-  `agents/gemini_agent.py` a una implementación reutilizable.
-- `GroqProvider`: extrae el cliente HTTP de `agents/groq_agent.py` y
-  normaliza respuestas compatibles con OpenAI.
+Detener y pedir intervención cuando:
 
-La selección de proveedor debe vivir en configuración por carpeta/Colección,
-no en prompts codificados en `window.py`. La migración debe mantener los
-comandos personalizados existentes de `AgentConfigStore`.
+- se alcance el máximo de ciclos;
+- el mismo check falle repetidamente sin cambios sustanciales;
+- el agente solicite una decisión humana;
+- falte autenticación, herramienta o identidad Git;
+- haya conflictos, cambios externos o un working tree inesperado;
+- se cancele el proceso o cierre la aplicación.
 
-## 6. Herramientas y seguridad
+El usuario debe poder reanudar una ejecución persistida sin perder el plan, los commits ni los errores anteriores.
 
-Las herramientas deben ser funciones tipadas, con validación antes de
-ejecutar:
+## 10. Persistencia y recuperación
 
-- inspección: listar archivos, leer archivo con límite de tamaño, buscar
-  símbolos, consultar `git status`, `git diff` y `git log`;
-- edición: aplicar parche dentro de `workspace`, sin aceptar rutas fuera de
-  la carpeta autorizada;
-- verificación: comandos declarados en configuración y con timeout;
-- Git: crear/cambiar ramas, preparar diff y crear commits solo con una
-  aprobación explícita, salvo una política configurada;
-- website tools: exponer crawler, analyzer y scraper existentes con límites
-  de dominio, páginas, workers y robots.txt;
-- terminal: no exponer una shell libre al grafo; reutilizar una allowlist
-  equivalente a `validate_autorun_command` y ampliarla solo de forma
-  explícita.
+Extender el almacenamiento de configuración existente sin guardar secretos. Se recomienda un archivo por repositorio/sesión en `IA_DATA_DIR`, con:
 
-Medidas obligatorias:
-
-- mantener separación de `COPILOT_HOME`, API keys y perfiles;
-- eliminar secretos de logs, mensajes, checkpoints y errores;
-- limitar tiempo, tamaño de salida, archivos leídos y llamadas por ejecución;
-- bloquear path traversal, enlaces simbólicos fuera del workspace y comandos
-  encadenados;
-- registrar quién aprobó cada acción y con qué perfil;
-- cancelar procesos hijos al cancelar una ejecución;
-- no ejecutar acciones de escritura mientras el working tree tenga cambios
-  ajenos sin una confirmación clara.
-
-## 7. Integración con PyQt6
-
-No ejecutar el grafo en el hilo principal. Introducir un `AgentRunController`
-que:
-
-1. recibe `RunRequest` desde `window.py` o la bandeja de tareas;
-2. lanza la ejecución en `QThread`, `QThreadPool` o un worker asyncio
-   dedicado;
-3. emite señales Qt para `run_started`, `state_changed`, `event`,
-   `approval_required`, `run_finished` y `run_failed`;
-4. ofrece `cancel(run_id)`, `approve(run_id, decision)` y `resume(run_id)`;
-5. conserva `agent_console.py` como vista de salida, no como orquestador.
-
-La consola debe mostrar eventos estructurados y stdout/stderr de los CLI,
-manteniendo pestañas, stdin, logs y el historial. El diálogo de
-`AIAgentsDialog` debería quedar para configuración y autenticación; la
-ejecución duplicada debe migrarse gradualmente al controlador común.
-
-## 8. Persistencia y compatibilidad
-
-Mantener los JSON existentes y añadir un almacén de ejecuciones, inicialmente
-en `%APPDATA%\IARA\WebAgent\agent_runs\`:
-
-```text
-agent_runs/<run_id>.json       # metadata, estado y checkpoint
-agent_runs/<run_id>.events     # eventos append-only
-agent_runs/<run_id>/artifacts/ # planes, reportes y diffs
+```json
+{
+  "run_id": "...",
+  "folder": "...",
+  "agent_id": "copilot",
+  "status": "RUNNING_CHECKS",
+  "plan_version": 1,
+  "cycle": 2,
+  "max_cycles": 10,
+  "approved_at": "...",
+  "base_head": "...",
+  "cycles": [
+    {
+      "number": 1,
+      "agent_exit_code": 0,
+      "checks": [],
+      "commit": null,
+      "status": "..."
+    }
+  ]
+}
 ```
 
-Evolución de `task_manager.py`:
+Escribir de forma atómica y tolerar cierres inesperados. Al iniciar WebAgent, detectar ejecuciones incompletas y ofrecer reanudarlas, cancelarlas o inspeccionarlas. Los logs completos continúan en el sistema de historial existente; el estado solo debe guardar referencias y resúmenes.
 
-- agregar `run_id`, `status`, `started`, `finished`, `error` y `result`;
-- conservar tareas antiguas sin `run_id` mediante migración tolerante;
-- diferenciar estado de la tarea (`pending/completed/cancelled`) del estado de
-  la ejecución (`queued/running/waiting_approval/failed/completed`);
-- guardar `collection_id` y `profile_id` en el momento de iniciar una corrida,
-  para que cambiar la selección actual no altere una ejecución existente.
+## 11. Cambios técnicos propuestos
 
-En una fase posterior, si el volumen o la concurrencia lo justifican, migrar
-el almacén de ejecuciones a SQLite. No introducir una base de datos solo por
-adoptar LangGraph.
+1. **Orquestador nuevo**, preferentemente `core/agent_framework.py`, sin dependencias de widgets. Será responsable de estados, ciclos, persistencia, límites y transiciones.
+2. **Adaptador de ejecución** en `agents/agent_console.py` para lanzar el agente usando el mecanismo actual, capturar salida y notificar finalización.
+3. **Runner de checks** reutilizando `core/automation.py`, con resultado estructurado, timeout, cancelación y salida acotada.
+4. **API de Git** en `core/file_ops.py` para obtener HEAD/diff, validar identidad y crear commits seguros.
+5. **Panel UI** en `agents/agent_console.py` o un diálogo dedicado, manteniendo el patrón de procesos no modales y referencias vivas ya usado por la aplicación.
+6. **Persistencia** en `AgentConfigStore` o un almacén específico de ejecuciones; migrar configuraciones antiguas sin romper `autorun` existente.
+7. **Historial**: agregar metadatos de framework a los logs de `agents/agent_runs.py`, sin incrustar logs gigantes en la vista resumida.
 
-## 9. Fases de implementación
+No cambiar el comportamiento del autorun manual: las ejecuciones normales de un agente deben seguir pudiendo usar checks y commit automático según su configuración. El modo framework debe ser una política explícita y más estricta.
 
-### Fase 0 — Contratos y reducción de riesgo
+## 12. Seguridad y confiabilidad
 
-- fijar versión compatible de Python y LangGraph;
-- documentar límites de ejecución, permisos y política de aprobación;
-- crear `models.py`, `events.py`, `errors.py` y pruebas de serialización;
-- identificar y no romper configuraciones existentes de `codex_config.json`;
-- decidir una única ruta de ejecución nueva y marcar el diálogo antiguo como
-  compatibilidad durante la transición.
+- Mantener la lista de binarios permitidos y el bloqueo de operadores de shell.
+- Ejecutar siempre con `cwd` validado y sin interpolar texto del usuario en comandos.
+- No enviar secretos al agente ni persistirlos en el plan o los logs.
+- Aplicar límites de tiempo, ciclos, tamaño de salida y tamaño de prompt.
+- No ejecutar checks en paralelo sobre un mismo working tree.
+- Detectar cambios hechos fuera de la ejecución mediante el hash inicial y el estado Git.
+- Liberar procesos al cancelar y evitar que callbacks de un ciclo viejo alteren una ejecución nueva.
+- Informar explícitamente errores de configuración, proceso, check y commit.
 
-**Salida:** contratos estables, sin cambio visible en el flujo actual.
+## 13. Criterios de aceptación
 
-### Fase 1 — Runtime y ejecución de un proveedor
+- Se puede generar un plan Markdown sin modificar el repositorio.
+- El usuario puede editar/rechazar el plan, pedir cambios y aprobar una versión concreta.
+- La aprobación inicia automáticamente el primer ciclo.
+- El agente recibe la instrucción de no ejecutar chequeos ni hacer commits.
+- Si un check falla, el ciclo queda visible como fallido y el error llega al agente en el ciclo siguiente.
+- Si todos los checks pasan, se crea exactamente un commit no vacío y se inicia el siguiente ciclo.
+- La tarea solo se marca completa con señal de finalización y checks exitosos.
+- Pausar, cancelar, cerrar y reanudar no corrompe el estado ni deja procesos huérfanos.
+- Los límites de seguridad bloquean comandos inválidos y no exponen secretos.
+- Las ejecuciones normales existentes y el autorun actual conservan su comportamiento.
 
-- implementar `AgentRunController` y el puente Qt/async;
-- implementar `checkpoints.py` con escritura atómica y recuperación;
-- implementar un grafo lineal `intake -> inspect -> plan -> review`;
-- integrar primero Gemini o Groq como proveedor sin escritura;
-- mostrar eventos y estados en `AgentConsolePanel`.
+## 14. Orden recomendado de implementación
 
-**Salida:** una tarea de consulta puede ejecutarse, cancelarse, reanudarse y
-verse en el historial sin modificar archivos.
-
-### Fase 2 — Herramientas seguras y workspace
-
-- extraer operaciones reutilizables de `file_ops.py`;
-- implementar lectura, búsqueda, parche y Git como herramientas tipadas;
-- añadir límites, timeouts, allowlist y aprobación para escritura;
-- producir artefactos de plan, diff y reporte de verificaciones.
-
-**Salida:** un flujo puede proponer y aplicar un cambio controlado en una rama
-de trabajo.
-
-### Fase 3 — Integración de Copilot/Codex
-
-- encapsular `QProcess`, autenticación device flow, stdin y salida en
-  `CopilotCliProvider`/`CodexCliProvider`;
-- mover rotación de cuota a una política del runtime;
-- conservar `COPILOT_HOME` por perfil y no mezclar credenciales;
-- soportar comandos personalizados existentes como modo legacy;
-- migrar autorun al nodo `verify` con la misma validación de seguridad.
-
-**Salida:** los flujos de código usan los agentes actuales sin perder
-funcionalidad ni aislamiento.
-
-### Fase 4 — Bandeja de tareas, Colecciones y revisión
-
-- iniciar una corrida desde `window.py` y `new_tab_page.py`;
-- asociar automáticamente `task_id`, `collection_id`, `profile_id` y
-  workspace;
-- añadir UI de aprobaciones, cancelación, reintento y reanudación;
-- enriquecer `agent_runs.html` con estados, eventos, artefactos y diff;
-- permitir abrir la corrida asociada desde una tarea histórica.
-
-**Salida:** flujo completo desde tarea hasta revisión de cambios.
-
-### Fase 5 — Flujos multiagente opcionales
-
-- incorporar roles solo si un caso real lo justifica: planificador,
-  implementador, verificador y revisor;
-- limitar la comunicación a mensajes y artefactos estructurados;
-- evitar conversaciones abiertas sin presupuesto, límite de iteraciones o
-  condición de finalización;
-- medir costo, latencia, tasa de reintentos y calidad antes de activar por
-  defecto.
-
-**Salida:** colaboración multiagente controlada, no una dependencia
-innecesaria para las tareas simples.
-
-## 10. Validación
-
-Agregar pruebas unitarias y de integración para:
-
-- serialización, migración y recuperación de checkpoints;
-- transiciones válidas e inválidas del grafo;
-- cancelación, timeout, reintento y reanudación;
-- aislamiento de perfiles y ausencia de secretos en logs/checkpoints;
-- rechazo de path traversal, comandos encadenados y workspaces inválidos;
-- working tree sucio, ramas inexistentes, conflictos y rollback Git;
-- errores HTTP de Gemini/Groq y salida inesperada de CLI;
-- rotación de Copilot sin duplicar ejecuciones;
-- señales Qt emitidas en el orden correcto sin bloquear la interfaz;
-- compatibilidad con tareas y configuraciones creadas por versiones anteriores.
-
-Casos manuales de aceptación:
-
-1. Cerrar y reabrir WebAgent durante una pausa de aprobación y continuar la
-   misma corrida.
-2. Ejecutar una tarea en dos perfiles y comprobar que no comparten
-   `COPILOT_HOME`, tokens ni logs sensibles.
-3. Rechazar un plan y comprobar que no se modifica el repositorio.
-4. Forzar un error de verificación y comprobar que se conserva el diff y se
-   ofrece reintento.
-5. Confirmar que el uso legacy de Copilot/Codex sigue funcionando mientras se
-   migra cada proveedor.
-
-## 11. Dependencias y decisión de adopción
-
-La dependencia nueva mínima sería LangGraph y su soporte de checkpoint
-compatible con el runtime elegido. Los clientes HTTP y adaptadores CLI deben
-reutilizar la biblioteca estándar y el código existente antes de agregar
-SDKs adicionales. Las dependencias opcionales de observabilidad deben
-incorporarse solo después de definir qué eventos se almacenan localmente.
-
-La adopción se considera exitosa cuando el flujo lineal de la Fase 1 ofrece
-estado durable, cancelación, reanudación y aprobación, y cuando Copilot/Codex
-pueden integrarse sin que la UI conozca detalles del framework. Si LangGraph
-no puede funcionar de forma estable con el modelo de concurrencia elegido,
-la alternativa de respaldo es conservar los contratos propios y reemplazar
-solo `graph.py` por una implementación explícita sin framework; no acoplar
-el resto del sistema a AutoGen o CrewAI.
-
-## 12. Resultado esperado
-
-WebAgent debe terminar con tres capas claras:
-
-1. **Interfaz:** PyQt6, consola, bandeja de tareas, historial y aprobaciones.
-2. **Orquestación:** LangGraph, estado durable, políticas, eventos y
-   reanudación.
-3. **Capacidades:** proveedores Gemini/Groq/Copilot/Codex, herramientas de
-   archivos/Git/website tools y almacenamiento de perfiles.
-
-Esta separación permite sumar proveedores o flujos sin duplicar lógica de
-autenticación, procesos, Git y seguridad, y deja a LangGraph en el lugar que
-más valor aporta al proyecto: coordinar estados y decisiones auditables.
+1. Definir modelos de estado, resultados y persistencia atómica.
+2. Extraer o completar un runner de autorun con callbacks/resultados estructurados.
+3. Completar helpers Git para HEAD, staging seguro y commit.
+4. Implementar el orquestador sin UI y probar sus transiciones.
+5. Integrarlo con `AgentConsolePanel` y el historial de logs.
+6. Agregar generación/edición/aprobación del plan.
+7. Agregar pausa, cancelación, reanudación y límites.
+8. Ejecutar pruebas manuales con un repositorio Python, uno Node/Rust y un repositorio con check fallido.
+9. Actualizar README y la ayuda de configuración de agentes con el nuevo flujo.
