@@ -564,17 +564,48 @@ def _quoted_reference(tweet: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _timeline_instructions(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Obtiene instrucciones de listas y de la timeline principal de X."""
+    data_root = data.get("data", {})
+    paths = (
+        ("list", "tweets_timeline", "timeline", "instructions"),
+        ("home", "home_timeline_urt", "instructions"),
+    )
+    instructions: list[dict[str, Any]] = []
+    for path in paths:
+        current: Any = data_root
+        for key in path:
+            if not isinstance(current, dict):
+                current = None
+                break
+            current = current.get(key)
+        if isinstance(current, list):
+            instructions.extend(
+                instruction for instruction in current
+                if isinstance(instruction, dict)
+            )
+    return instructions
+
+
 def extract_tweets(data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Extrae las entradas visibles, evitando duplicar el tweet original de un RT."""
-    instructions = data.get("data", {}).get("list", {}).get("tweets_timeline", {}).get(
-        "timeline", {}).get("instructions", [])
+    """Extrae tweets de listas y timelines, evitando duplicar entradas."""
+    instructions = _timeline_instructions(data)
     tweets = []
     seen: set[str] = set()
     for instruction in instructions:
-        for entry in instruction.get("entries", []):
+        entries = instruction.get("entries", [])
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
             result = entry.get("content", {}).get("itemContent", {}).get(
                 "tweet_results", {}).get("result", {})
+            if not isinstance(result, dict):
+                continue
             tweet = result.get("tweet", result)
+            if not isinstance(tweet, dict):
+                continue
             normalized = _normalize(tweet)
             if not normalized or normalized["id"] in seen:
                 continue

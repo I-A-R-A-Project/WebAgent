@@ -228,6 +228,7 @@ WebAgent/
 │   └── ...
 ├── scripts/
 │   ├── record_window.py       # Grabación de ventana con FFmpeg
+│   ├── openrouter_models.py   # Tabla de modelos y precios de OpenRouter
 │   ├── refactor_ast_grep.py   # Búsquedas/refactors estructurales
 │   ├── twitter_archive.py     # Archivado de responses de X/Twitter
 │   ├── website_*.py           # Crawler, analizador, downloader y scraper
