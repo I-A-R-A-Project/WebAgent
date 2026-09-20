@@ -344,15 +344,15 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         main_layout = QVBoxLayout(content_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
 
+        main_layout.addWidget(self._create_navbar(), 0)
+
         content_row = QWidget()
         row_layout = QHBoxLayout(content_row)
         row_layout.setContentsMargins(0, 0, 0, 0)
         self._setup_sidebar(row_layout)
         self._setup_tabs_and_navbar(row_layout)
-        main_layout.addWidget(content_row, 1)
         self.console_toggle = QPushButton("⌄ Consola de agentes")
         self.console_toggle.clicked.connect(self._toggle_agent_console)
-        main_layout.addWidget(self.console_toggle, 0)
         self.agent_console = AgentConsolePanel(
             self,
             self._ensure_agent_profile,
@@ -367,7 +367,6 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
                 self.profile_manager.get_profile(profile_id) or {}
             ).get("copilot_usage"),
         )
-        main_layout.addWidget(self.agent_console, 0)
 
         self.rail = SidebarRail()
         self.rail.on_toggle = self._on_sidebar_app_clicked
@@ -382,8 +381,11 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         self.app_panel = AppPanelOverlay(self._get_qt_profile(default_profile_id))
         self.app_panel.on_new_window_request = self._handle_new_window_request
 
-        container = SidebarContainer(self.rail, content_widget, self.app_panel)
-        self.setCentralWidget(container)
+        content_container = SidebarContainer(self.rail, content_row, self.app_panel)
+        main_layout.addWidget(content_container, 1)
+        main_layout.addWidget(self.console_toggle, 0)
+        main_layout.addWidget(self.agent_console, 0)
+        self.setCentralWidget(content_widget)
 
     def _get_agent_collection_directories(self) -> list[tuple[str, str]]:
         """Devuelve únicamente las carpetas configuradas en Colecciones."""
@@ -503,6 +505,12 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
     def refresh_sidebar_apps(self):
         self.rail.rebuild(self.sidebar_apps_store.all(), self.app_panel.active_app_id)
 
+    def toggle_sidebar_visibility(self, visible):
+        self.rail.setVisible(visible)
+        if not visible:
+            self.app_panel.close_panel()
+            self.rail.uncheck_all()
+
     def _profile_id_for_webview(self, webview):
         return self.tab_data.get(id(webview), {}).get(
             "profile_id", self.current_profile_id
@@ -558,9 +566,6 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
     def _setup_tabs_and_navbar(self, parent_layout):
         right_layout = QVBoxLayout()
 
-        navbar = self._create_navbar()
-        right_layout.addWidget(navbar)
-
         self.tabs = QTabWidget()
         prepare_tab_widget(self.tabs)
         self.plus_widget = add_plus_tab(self.tabs)
@@ -600,6 +605,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             self.current_webview,
             address_handler=self._on_address_bar_enter,
             history_handler=self.show_history,
+            sidebar_handler=self.toggle_sidebar_visibility,
             reload_handler=self._reload_current_webview,
             save_handler=lambda: save_web_page(
                 self.current_webview(),
@@ -1571,7 +1577,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
     # ------------------------------------------------------------------
 
     def load_url(self, url: str):
-        navigate_view(self.current_webview, url)
+        navigate_view(self.current_webview, url.strip())
 
     def go_home(self):
         webview = self.current_webview()
