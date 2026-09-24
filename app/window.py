@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineDownloadRequest
+from PyQt6 import sip
 from PyQt6.QtCore import (
     Qt, QUrl, QMimeData, QEvent, QTimer, QThread, QCoreApplication
 )
@@ -422,6 +423,8 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             )
 
     def _read_copilot_usage(self, profile_id, page, ok, attempts=0):
+        if not self._is_active_copilot_usage_page(profile_id, page):
+            return
         if not ok:
             self._finish_copilot_usage_check(profile_id, page, None)
             return
@@ -445,6 +448,8 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         )
 
     def _retry_or_finish_copilot_usage(self, profile_id, page, result, attempts):
+        if not self._is_active_copilot_usage_page(profile_id, page):
+            return
         if result is None and attempts < 10:
             QTimer.singleShot(
                 1000,
@@ -454,6 +459,13 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             )
             return
         self._finish_copilot_usage_check(profile_id, page, result)
+
+    def _is_active_copilot_usage_page(self, profile_id, page):
+        return (
+            profile_id in getattr(self, "_copilot_usage_pending", set())
+            and self._copilot_usage_pages.get(profile_id) is page
+            and not sip.isdeleted(page)
+        )
 
     def _finish_copilot_usage_check(self, profile_id, page, result):
         if profile_id not in getattr(self, "_copilot_usage_pending", set()):
@@ -482,8 +494,9 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         for dialog in self._agent_dialogs:
             if hasattr(dialog, "_update_copilot_usage_display"):
                 dialog._update_copilot_usage_display()
-        page.deleteLater()
         self._copilot_usage_pages.pop(profile_id, None)
+        if not sip.isdeleted(page):
+            page.deleteLater()
 
     def _rotate_agent_profile(self, current_profile_id: str) -> str | None:
         profile_ids = self.profile_manager.agent_profile_ids()
