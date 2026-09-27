@@ -10,6 +10,9 @@ Contiene:
 import shutil
 import subprocess
 import re
+import os
+import hashlib
+import threading
 from pathlib import Path
 from datetime import datetime
 
@@ -97,7 +100,7 @@ class GitVersioning:
     @staticmethod
     def has_repo(directory: str) -> bool:
         """Chequea si la carpeta ya es un repositorio git (tiene .git)."""
-        return (Path(directory) / ".git").is_dir()
+        return (Path(directory) / ".git").exists()
 
     @staticmethod
     def get_log(directory: str, limit: int = 30) -> list:
@@ -218,14 +221,165 @@ class GitVersioning:
         """True si no hay cambios sin commitear (working tree limpio)."""
         if not GitVersioning.is_available() or not GitVersioning.has_repo(directory):
             return True
+        ok, stdout, _ = GitVersioning.run(
+            directory, ["status", "--porcelain", "--untracked-files=all"], timeout=10
+        )
+        return ok and not stdout.strip()
+
+    @staticmethod
+    def get_head(directory: str) -> str:
+        """Devuelve el hash completo de HEAD, o vacío si no existe."""
+        ok, stdout, _ = GitVersioning.run(directory, ["rev-parse", "HEAD"], timeout=10)
+        return stdout.strip() if ok else ""
+
+    @staticmethod
+    def get_status(directory: str) -> str:
+        """Devuelve el estado corto sin ocultar errores del comando Git."""
+        ok, stdout, stderr = GitVersioning.run(
+            directory, ["status", "--short", "--untracked-files=all"], timeout=10
+        )
+        if not ok:
+            raise RuntimeError(stderr.strip() or "No se pudo consultar el estado de Git.")
+        return stdout
+
+    @staticmethod
+    def get_changed_files(directory: str) -> list[str]:
+        ok, stdout, stderr = GitVersioning.run(
+            directory,
+            ["status", "--porcelain=v1", "--untracked-files=all", "-z"],
+            timeout=10,
+        )
+        if not ok:
+            raise RuntimeError(stderr.strip() or "No se pudo consultar el estado de Git.")
+
+        entries = stdout.split("\0")
+        changed: list[str] = []
+        index = 0
+        while index < len(entries):
+            entry = entries[index]
+            index += 1
+            if not entry:
+                continue
+            if len(entry) < 4:
+                raise RuntimeError("Git devolvió una entrada de estado inválida.")
+            changed.append(entry[3:])
+            if "R" in entry[:2] or "C" in entry[:2]:
+                if index >= len(entries) or not entries[index]:
+                    raise RuntimeError("Git devolvió una ruta de rename/copy incompleta.")
+                changed.append(entries[index])
+                index += 1
+        return changed
+
+    @staticmethod
+    def get_worktree_fingerprint(directory: str) -> str:
+        """Resume un ciclo solo si el estado no versionado sigue intacto."""
+        root = Path(directory).resolve()
+        ok, status, stderr = GitVersioning.run(
+            str(root),
+            ["status", "--porcelain=v1", "--untracked-files=all", "-z"],
+            timeout=10,
+        )
+        if not ok:
+            raise RuntimeError(stderr.strip() or "No se pudo capturar el estado de Git.")
+        digest = hashlib.sha256(status.encode("utf-8", errors="surrogatepass"))
+        ok, tree, stderr = GitVersioning.run(str(root), ["write-tree"], timeout=10)
+        if not ok:
+            raise RuntimeError(stderr.strip() or "No se pudo capturar el índice de Git.")
+        digest.update(tree.strip().encode("ascii", errors="replace"))
+        for relative in GitVersioning.get_changed_files(str(root)):
+            candidate = root / relative
+            if candidate.is_symlink():
+                path = candidate.resolve()
+                if path != root and root not in path.parents:
+                    raise RuntimeError(f"Ruta modificada fuera del repositorio: {relative}")
+                digest.update(relative.encode("utf-8", errors="surrogatepass"))
+                digest.update(b"symlink:")
+                digest.update(os.readlink(candidate).encode("utf-8", errors="surrogatepass"))
+                continue
+            path = candidate.resolve()
+            if path != root and root not in path.parents:
+                raise RuntimeError(f"Ruta modificada fuera del repositorio: {relative}")
+            digest.update(relative.encode("utf-8", errors="surrogatepass"))
+            if path.is_file():
+                with path.open("rb") as handle:
+                    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            else:
+                digest.update(b"<missing>")
+        return digest.hexdigest()
+
+    @staticmethod
+    def commit_framework_changes(
+        directory: str,
+        message: str,
+        base_head: str | None = None,
+        base_branch: str | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[bool, str, list[str], str]:
+        """Staging acotado al repositorio y commit no vacío para el framework."""
+        root = Path(directory).resolve()
+        if not root.is_dir() or not GitVersioning.has_repo(str(root)):
+            return False, "", [], "La carpeta no es un repositorio Git."
+        if not GitVersioning.check_identity(str(root)):
+            return False, "", [], "Git no tiene user.name y user.email configurados."
+        if base_head and GitVersioning.get_head(str(root)) != base_head:
+            return False, "", [], "HEAD cambió desde el inicio del ciclo."
+        if base_branch and GitVersioning.get_current_branch(str(root)) != base_branch:
+            return False, "", [], "La rama cambió desde la aprobación."
+        if cancel_event and cancel_event.is_set():
+            return False, "", [], "Ejecución cancelada antes de preparar el commit."
         try:
-            result = subprocess.run(
-                ["git", "status", "--porcelain"], cwd=directory,
-                capture_output=True, text=True, timeout=10,
+            changed = GitVersioning.get_changed_files(str(root))
+        except RuntimeError as exc:
+            return False, "", [], str(exc)
+        if not changed:
+            return False, "", [], "No hay cambios para commitear."
+        for relative in changed:
+            path = (root / relative).resolve()
+            if path != root and root not in path.parents:
+                return False, "", [], f"Ruta fuera del repositorio: {relative}"
+        try:
+            add = subprocess.run(
+                ["git", "add", "-A", "--", *changed],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                timeout=20,
             )
-            return result.stdout.strip() == ""
-        except Exception:
-            return True
+            if add.returncode != 0:
+                return False, "", changed, add.stderr.strip() or "No se pudo preparar el staging."
+            if cancel_event and cancel_event.is_set():
+                return False, "", changed, "Ejecución cancelada antes de crear el commit."
+            if base_head and GitVersioning.get_head(str(root)) != base_head:
+                return False, "", changed, "HEAD cambió antes de crear el commit."
+            if base_branch and GitVersioning.get_current_branch(str(root)) != base_branch:
+                return False, "", changed, "La rama cambió antes de crear el commit."
+            staged = subprocess.run(
+                ["git", "diff", "--cached", "--quiet"],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if staged.returncode == 0:
+                return False, "", changed, "No hay cambios preparados para commitear."
+            if staged.returncode != 1:
+                return False, "", changed, staged.stderr.strip() or "No se pudo validar el staging."
+            commit = subprocess.run(
+                ["git", "commit", "-m", message],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if commit.returncode != 0:
+                return False, "", changed, commit.stderr.strip() or "No se pudo crear el commit."
+            commit_hash = GitVersioning.get_head(str(root))
+            if not commit_hash:
+                return False, "", changed, "Git creó el commit pero no se pudo obtener su hash."
+            return True, commit_hash, changed, ""
+        except (OSError, subprocess.SubprocessError) as exc:
+            return False, "", changed, str(exc)
 
     @staticmethod
     def run(directory: str, args: list, timeout: int = 30) -> tuple:
@@ -278,4 +432,3 @@ class FileOps:
             return result.returncode == 0
         except Exception:
             return False
-

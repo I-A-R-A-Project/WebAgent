@@ -37,6 +37,7 @@ from app.new_tab_page import render_new_tab_page
 from core.task_manager import TaskManager
 from agents.ai_manager import AgentConfigStore
 from agents.agent_console import AgentConsolePanel
+from agents.agent_framework_dialog import AgentFrameworkDialog
 from agents.agent_runs import attach_bridge, render_agent_runs_page
 from app.package_script_tab import PackageScriptTab
 from app.linkedin_dialog import LinkedInPublishDialog
@@ -108,6 +109,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         # para que no se destruyan mientras la descarga sigue en background.
         self._download_dialogs = []
         self._agent_dialogs = []
+        self._framework_dialogs = []
         self._devtools_windows = []
         self._har_thread = None
         self._har_worker = None
@@ -1148,6 +1150,12 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         agents_action = QAction("Agentes IA...", self)
         agents_action.triggered.connect(lambda: self._open_ai_manager(self.current_profile_id))
         view_menu.addAction(agents_action)
+        framework_action = QAction("Framework de tarea...", self)
+        framework_action.setToolTip(
+            "Generar un plan revisable y ejecutar ciclos verificados sobre un repositorio"
+        )
+        framework_action.triggered.connect(self._open_agent_framework)
+        view_menu.addAction(framework_action)
         linkedin_action = QAction("Publicar en LinkedIn...", self)
         linkedin_action.setToolTip("Abrir LinkedIn y publicar desde un perfil elegido")
         linkedin_action.triggered.connect(self._open_linkedin_publish_dialog)
@@ -1585,6 +1593,33 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         dialog.finished.connect(lambda: self._website_tools_dialogs.remove(dialog) if dialog in self._website_tools_dialogs else None)
         dialog.show()
 
+    def _open_agent_framework(self):
+        for dialog in self._framework_dialogs:
+            if dialog.isVisible():
+                dialog.raise_()
+                dialog.activateWindow()
+                return
+        try:
+            dialog = AgentFrameworkDialog(
+                self,
+                self.agent_console,
+                self._get_agent_collection_directories,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            QMessageBox.warning(
+                self, "Framework de tarea", f"No se pudo abrir el framework: {exc}"
+            )
+            return
+        self._framework_dialogs.append(dialog)
+        dialog.finished.connect(
+            lambda _result=None, current=dialog:
+                self._framework_dialogs.remove(current)
+                if current in self._framework_dialogs else None
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
     # ------------------------------------------------------------------
     # Navigation helpers
     # ------------------------------------------------------------------
@@ -1748,7 +1783,11 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             if self._har_thread:
                 self._har_thread.quit()
                 self._har_thread.wait(3000)
-        if self.agent_console.has_running_processes():
+        if self.agent_console.has_running_processes() or any(
+            dialog.has_active_worker() for dialog in self._framework_dialogs
+        ):
+            for dialog in self._framework_dialogs:
+                dialog.pause_for_shutdown()
             event.ignore()
             if not self._closing_wait_for_agents:
                 self._closing_wait_for_agents = True
@@ -1765,7 +1804,9 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         event.accept()
 
     def _close_after_agents_finish(self):
-        if self.agent_console.has_running_processes():
+        if self.agent_console.has_running_processes() or any(
+            dialog.has_active_worker() for dialog in self._framework_dialogs
+        ):
             QTimer.singleShot(100, self._close_after_agents_finish)
             return
         self.close()

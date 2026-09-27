@@ -29,7 +29,11 @@ from agents.ai_manager import (
     validate_autorun_command,
 )
 from core.file_ops import GitVersioning
-from core.automation import build_autorun_plan
+from core.automation import (
+    build_autorun_plan,
+    redact_sensitive_text,
+    sensitive_environment_values,
+)
 from web_common.tabs import prepare_tab_widget
 
 
@@ -39,6 +43,7 @@ CONSOLE_FG = "#e6e8ee"
 CONSOLE_BORDER = "#2b2f3a"
 CONSOLE_SELECTION_BG = "#3a3320"
 CONSOLE_SELECTION_FG = "#ffffff"
+FRAMEWORK_OUTPUT_LIMIT = 100_000
 
 
 def apply_console_style(widget):
@@ -189,6 +194,10 @@ class AgentConsolePanel(QWidget):
         self._highlighters = []
         self._collection_review_callback = None
         self._agent_completion_callback = None
+        self._active_framework_run_id = None
+        self._framework_reservation_id = None
+        self._framework_output_buffer = ""
+        self._framework_secret_values = []
         self.setVisible(False)
 
         layout = QVBoxLayout(self)
@@ -237,12 +246,21 @@ class AgentConsolePanel(QWidget):
         """Indica si la consola está ocupada con una ejecución o su autorun."""
         return bool(self.processes or self.autorun_process is not None)
 
-    def _queue_run(self, raw_task, folder, completion_callback):
+    def _queue_run(
+        self,
+        raw_task,
+        folder,
+        completion_callback,
+        framework_run_id=None,
+        framework_profile_id=None,
+    ):
         self._pending_runs.append(
             {
                 "task": raw_task,
                 "folder": folder,
                 "completion_callback": completion_callback,
+                "framework_run_id": framework_run_id,
+                "framework_profile_id": framework_profile_id,
             }
         )
         self.task_edit.clear()
@@ -250,23 +268,61 @@ class AgentConsolePanel(QWidget):
     def _start_next_queued_run(self):
         if self._queue_drain_scheduled or self._has_active_execution():
             return
+        if self._framework_reservation_id:
+            matching_run = next(
+                (
+                    queued
+                    for index, queued in enumerate(self._pending_runs)
+                    if queued.get("framework_run_id") == self._framework_reservation_id
+                ),
+                None,
+            )
+            if matching_run is None:
+                return
+        else:
+            if not self._pending_runs:
+                return
         self._queue_drain_scheduled = True
 
         def start():
             self._queue_drain_scheduled = False
             if self._has_active_execution() or not self._pending_runs:
                 return
-            queued = self._pending_runs.pop(0)
+            if self._framework_reservation_id:
+                selected_index = next(
+                    (
+                        index
+                        for index, item in enumerate(self._pending_runs)
+                        if item.get("framework_run_id") == self._framework_reservation_id
+                    ),
+                    None,
+                )
+                if selected_index is None:
+                    return
+            else:
+                selected_index = 0
+            queued = self._pending_runs.pop(selected_index)
+            if queued.get("framework_run_id") and not self._framework_reservation_id:
+                self._framework_reservation_id = queued["framework_run_id"]
             if not self.select_directory(queued["folder"]):
                 self._new_tab(
                     "command",
                     f"Directorio inexistente: {queued['folder']}",
                     finished=True,
                 )
+                if queued.get("framework_run_id"):
+                    queued["completion_callback"]("", 1)
                 self._start_next_queued_run()
                 return
             self.task_edit.setPlainText(queued["task"])
-            self.run_agent(queued["completion_callback"], _from_queue=True)
+            if queued.get("framework_run_id"):
+                self._start_framework_agent(
+                    queued["framework_run_id"],
+                    queued["completion_callback"],
+                    queued.get("framework_profile_id"),
+                )
+            else:
+                self.run_agent(queued["completion_callback"], _from_queue=True)
 
         QTimer.singleShot(0, start)
 
@@ -278,6 +334,30 @@ class AgentConsolePanel(QWidget):
 
     def _profile_id(self):
         return self._profile_override or self.profile_getter()
+
+    def framework_profile_id(self):
+        """Devuelve el perfil que usará la próxima tarea del framework."""
+        return self._profile_id() or ""
+
+    def _redact_framework_text(self, text, folder=None, agent_id=None):
+        if not (
+            self._active_framework_run_id
+            or self._framework_reservation_id
+        ):
+            return text
+        profile_id = self._profile_id()
+        token = (
+            self.config_store.get_profile_agent_token(
+                folder or self._run_folder(),
+                profile_id,
+                agent_id or self.current_agent_id or "",
+            )
+            if profile_id else ""
+        )
+        secrets = [*self._framework_secret_values, *sensitive_environment_values()]
+        if token:
+            secrets.append(token)
+        return redact_sensitive_text(text, secrets)
 
     def _refresh_directory_options(self):
         current_folder = self._working_folder()
@@ -322,6 +402,86 @@ class AgentConsolePanel(QWidget):
         self.setVisible(True)
         self.raise_()
         self.run_agent()
+
+    def run_framework_task(
+        self, run_id, agent_id, task, folder, callback, profile_id=None
+    ):
+        """Encola una tarea del framework sin pasar por el autorun normal."""
+        if agent_id not in AGENT_DEFS:
+            raise ValueError(f"Agente desconocido: {agent_id}")
+        if not task.strip():
+            raise ValueError("La tarea del agente no puede estar vacía.")
+        if not folder or not Path(folder).is_dir():
+            raise ValueError(f"Directorio inexistente: {folder}")
+        if not (profile_id or self._profile_id()):
+            raise RuntimeError("No hay un perfil disponible para ejecutar agentes.")
+        raw_task = f"{agent_id} {task.strip()}"
+        if self._framework_reservation_id is None:
+            self._framework_reservation_id = run_id
+        if self._has_active_execution() or self._framework_reservation_id != run_id:
+            self._queue_run(
+                raw_task,
+                folder,
+                callback,
+                framework_run_id=run_id,
+                framework_profile_id=profile_id,
+            )
+            self.setVisible(True)
+            return
+        if not self.select_directory(folder):
+            raise ValueError(f"Directorio inexistente: {folder}")
+        self.task_edit.setPlainText(raw_task)
+        self.setVisible(True)
+        self._start_framework_agent(run_id, callback, profile_id)
+
+    def finish_framework_run(self, run_id):
+        """Libera la consola al concluir la fase completa del framework."""
+        if self._framework_reservation_id == run_id:
+            self._framework_reservation_id = None
+            self._framework_secret_values = []
+            self._start_next_queued_run()
+
+    def _start_framework_agent(self, run_id, callback, profile_id=None):
+        selected_profile = profile_id or self._profile_id()
+        task_parts = self.task_edit.toPlainText().split(None, 1)
+        agent_id = task_parts[0].lower().rstrip(":") if task_parts else ""
+        token = (
+            self.config_store.get_profile_agent_token(
+                self._working_folder(), selected_profile, agent_id
+            )
+            if selected_profile else ""
+        )
+        self._framework_secret_values = [token] if token else []
+        self.run_agent(
+            callback,
+            _from_queue=bool(self._has_active_execution()),
+            _framework_run_id=run_id,
+            _framework_profile_id=profile_id,
+        )
+        if (
+            self._active_framework_run_id == run_id
+            and not self._has_active_execution()
+        ):
+            self._active_framework_run_id = None
+            self._framework_output_buffer = ""
+            if self._agent_completion_callback is callback:
+                self._agent_completion_callback = None
+            callback("", 1)
+
+    def cancel_framework_task(self, run_id):
+        """Cancela una tarea en cola o el proceso activo de una ejecución."""
+        self._pending_runs = [
+            queued for queued in self._pending_runs
+            if queued.get("framework_run_id") != run_id
+        ]
+        if (
+            self._active_framework_run_id == run_id
+            and self.process is not None
+        ):
+            self._stopping_processes.add(self.process)
+            self.process.kill()
+            return True
+        return False
 
     def run_collection_review(
         self, task_text: str, context_dir: str, summary_path: str, callback
@@ -437,12 +597,15 @@ class AgentConsolePanel(QWidget):
         self.process.setWorkingDirectory(folder)
         environment = self._environment(agent_id)
         if environment is None:
+            self._process_outputs.pop(self.process, None)
+            self.processes.discard(self.process)
             self.process = None
             return
         self.process.setProcessEnvironment(environment)
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.process.readyReadStandardOutput.connect(self._read_output)
         self.process.finished.connect(self._finished)
+        self.process.errorOccurred.connect(self._process_error)
         if agent_id in ("copilot", "codex") and shutil.which("cmd.exe"):
             self.process.start("cmd.exe", ["/c", agent_id, "--help"])
         else:
@@ -470,6 +633,8 @@ class AgentConsolePanel(QWidget):
             if self._copilot_session_id
             else ""
         )
+        command = self._redact_framework_text(command, folder, agent_id)
+        task = self._redact_framework_text(task, folder, agent_id)
         self._write_log(
             f"=== {AGENT_DEFS.get(agent_id, {}).get('short_label', 'Comando')} ===\n"
             f"started: {datetime.now().isoformat()}\n"
@@ -542,7 +707,12 @@ class AgentConsolePanel(QWidget):
 
         if not sections:
             sections.append("--- No hay diff disponible (sin cambios detectados). ---")
-        self._write_log("\n=== Diff exacto de la ejecución ===\n" + "\n\n".join(sections) + "\n")
+        diff_text = "\n=== Diff exacto de la ejecución ===\n" + "\n\n".join(sections) + "\n"
+        self._write_log(
+            self._redact_framework_text(
+                diff_text, folder, self.current_agent_id
+            )
+        )
 
     def _write_log(self, text: str):
         if self._log_file is None:
@@ -577,7 +747,13 @@ class AgentConsolePanel(QWidget):
             environment.insert("GROQ_API_KEY", token)
         return environment
 
-    def run_agent(self, completion_callback=None, _from_queue=False):
+    def run_agent(
+        self,
+        completion_callback=None,
+        _from_queue=False,
+        _framework_run_id=None,
+        _framework_profile_id=None,
+    ):
         raw_task = self.task_edit.toPlainText().strip()
         if not raw_task:
             return
@@ -589,11 +765,25 @@ class AgentConsolePanel(QWidget):
                 finished=True,
             )
             return
-        if not _from_queue and self._has_active_execution():
-            self._queue_run(raw_task, self._working_folder(), completion_callback)
+        if not _from_queue and (
+            self._has_active_execution()
+            or (
+                self._framework_reservation_id
+                and _framework_run_id != self._framework_reservation_id
+            )
+        ):
+            self._queue_run(
+                raw_task,
+                self._working_folder(),
+                completion_callback,
+                framework_run_id=_framework_run_id,
+                framework_profile_id=_framework_profile_id,
+            )
             return
         if completion_callback is not None:
             self._agent_completion_callback = completion_callback
+        self._active_framework_run_id = _framework_run_id
+        self._framework_output_buffer = ""
         parts = raw_task.split(None, 1)
         agent_id = parts[0].lower().rstrip(":")
         retrying_copilot = self._copilot_retry_pending
@@ -603,7 +793,7 @@ class AgentConsolePanel(QWidget):
             allow_all_paths = self._copilot_allow_all_paths
             self._copilot_retry_pending = False
         else:
-            self._profile_override = None
+            self._profile_override = _framework_profile_id
             task = parts[1].strip() if len(parts) > 1 else ""
             allow_all_paths = False
         continue_requested = False
@@ -763,7 +953,7 @@ class AgentConsolePanel(QWidget):
         self._new_tab(
             agent_id,
             "\n",
-            prompt=f"$ {' '.join(argv)}",
+            prompt=f"$ {self._redact_framework_text(' '.join(argv), folder, agent_id)}",
         )
         self.current_run_kind = "agent"
         self._active_folder = folder
@@ -773,12 +963,15 @@ class AgentConsolePanel(QWidget):
         self.process.setWorkingDirectory(folder)
         environment = self._environment(agent_id)
         if environment is None:
+            self._process_outputs.pop(self.process, None)
+            self.processes.discard(self.process)
             self.process = None
             return
         self.process.setProcessEnvironment(environment)
         self.process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.process.readyReadStandardOutput.connect(self._read_output)
         self.process.finished.connect(self._finished)
+        self.process.errorOccurred.connect(self._process_error)
         if shutil.which("cmd.exe"):
             self.process.start("cmd.exe", ["/c", argv[0]] + argv[1:])
         else:
@@ -1052,6 +1245,9 @@ class AgentConsolePanel(QWidget):
         output = self._process_outputs.get(process)
         if process and output:
             data = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+            data = self._redact_framework_text(
+                data, self._active_folder, self.current_agent_id
+            )
             self._write_log(data)
             if self.current_run_kind == "agent" and self.current_agent_id == "copilot":
                 self._copilot_output_buffer += data
@@ -1062,6 +1258,11 @@ class AgentConsolePanel(QWidget):
                 self._detect_auth_error(self.current_agent_id, data)
             output.insertPlainText(data)
             output.moveCursor(output.textCursor().MoveOperation.End)
+            if self._active_framework_run_id:
+                self._framework_output_buffer += data
+                self._framework_output_buffer = self._framework_output_buffer[
+                    -FRAMEWORK_OUTPUT_LIMIT:
+                ]
 
     def _detect_auth_error(self, agent_id, text):
         if agent_id == "gemini" and "Falta GEMINI_API_KEY" in text:
@@ -1252,6 +1453,8 @@ class AgentConsolePanel(QWidget):
 
     def _finished(self, exit_code, _status):
         process = self.sender()
+        if process not in self.processes:
+            return
         output = self._process_outputs.pop(process, None)
         self.processes.discard(process)
         was_stopped = process in self._stopping_processes
@@ -1260,27 +1463,45 @@ class AgentConsolePanel(QWidget):
             self.process = None
         if process and output:
             data = bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+            data = self._redact_framework_text(
+                data, self._active_folder, self.current_agent_id
+            )
             if data:
                 self._write_log(data)
                 output.insertPlainText(data)
                 output.moveCursor(output.textCursor().MoveOperation.End)
+                if self._active_framework_run_id:
+                    self._framework_output_buffer += data
+                    self._framework_output_buffer = self._framework_output_buffer[
+                        -FRAMEWORK_OUTPUT_LIMIT:
+                    ]
         if output:
             output.appendPlainText(f"\n--- terminó (código {exit_code}) ---")
         self._write_log(f"\n--- terminó (código {exit_code}) ---\n")
         self._record_copilot_usage()
         run_kind = self.current_run_kind
         result = output.toPlainText() if output else ""
-        if run_kind == "agent" and exit_code == 0:
+        if (
+            run_kind == "agent"
+            and exit_code == 0
+            and self._active_framework_run_id is None
+        ):
             response = re.split(r"\n--- terminó \(código -?\d+\) ---", result, maxsplit=1)[0]
             self._save_gemini_response(self._current_task or "", response)
         if run_kind == "agent" and self._agent_completion_callback:
             callback = self._agent_completion_callback
             self._agent_completion_callback = None
+            callback_output = (
+                self._framework_output_buffer
+                if self._active_framework_run_id else result
+            )
+            self._active_framework_run_id = None
+            self._framework_output_buffer = ""
             self.current_run_kind = None
             self.current_agent_id = None
             self._write_git_diff()
             self._add_close_button(output)
-            callback(result, exit_code)
+            callback(callback_output, exit_code)
             self._start_next_queued_run()
             return
         if run_kind == "agent" and self._collection_review_callback:
@@ -1342,6 +1563,49 @@ class AgentConsolePanel(QWidget):
             self._finish_after_autorun(output)
         else:
             self._finish_after_autorun(output)
+
+    def _process_error(self, error):
+        process = self.sender()
+        if (
+            error != QProcess.ProcessError.FailedToStart
+            or process not in self.processes
+        ):
+            return
+        output = self._process_outputs.pop(process, None)
+        self.processes.discard(process)
+        if process is self.process:
+            self.process = None
+        message = self._redact_framework_text(
+            process.errorString() or "No se pudo iniciar el proceso del agente.",
+            self._active_folder,
+            self.current_agent_id,
+        )
+        if output:
+            output.appendPlainText(f"\n--- error del proceso: {message} ---")
+        self._write_log(f"\n--- error del proceso: {message} ---\n")
+        if self.current_run_kind == "agent" and self._agent_completion_callback:
+            callback = self._agent_completion_callback
+            self._agent_completion_callback = None
+            callback_output = (
+                self._framework_output_buffer
+                if self._active_framework_run_id else (
+                    output.toPlainText() if output else message
+                )
+            )
+            self._active_framework_run_id = None
+            self._framework_output_buffer = ""
+            self.current_run_kind = None
+            self.current_agent_id = None
+            self._write_git_diff()
+            self._add_close_button(output)
+            callback(callback_output, 1)
+        else:
+            self.current_run_kind = None
+            self.current_agent_id = None
+            self._active_folder = None
+            self._write_git_diff()
+            self._add_close_button(output)
+        self._start_next_queued_run()
 
     def _finish_after_autorun(self, output):
         self._write_git_diff()

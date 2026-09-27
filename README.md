@@ -112,6 +112,37 @@ Copilot CLI corre dentro de WebAgent mediante una terminal integrada.
 La separación de credenciales depende del almacenamiento usado por Copilot CLI.
 WebAgent no guarda tokens propios ni copia credenciales entre perfiles.
 
+### Framework de tarea
+
+Desde **Configuración → Framework de tarea...** se puede iniciar un flujo
+guiado de planificación y cambios verificados:
+
+1. Elegí una carpeta de Colección, un agente, la solicitud y los límites.
+2. WebAgent genera un plan Markdown sin editar el repositorio. Revisalo,
+   modificalo o pedí una nueva versión antes de aprobarlo.
+3. Al aprobar, el agente implementa un ciclo y WebAgent ejecuta los checks en
+   secuencia. Si fallan, el error vuelve al agente; si pasan, WebAgent crea un
+   commit no vacío antes de continuar.
+4. La ejecución termina con la señal estructurada de finalización del agente y
+   una última verificación exitosa. También se puede pausar al terminar el
+   ciclo actual, cancelar o reanudar una ejecución persistida.
+
+El framework usa el comando de autorun configurado para esa carpeta cuando
+está definido; si no, detecta checks según los manifiestos del proyecto. Los
+comandos se validan con la misma lista permitida de autorun. Un repositorio sin
+ningún check confiable queda bloqueado en lugar de considerarse exitoso. El
+límite predeterminado es de 10 ciclos y cada check tiene un timeout de 10
+minutos, ambos ajustables en el diálogo. El modo framework omite el autorun y
+el commit automático normal de la consola; las ejecuciones habituales no
+cambian.
+
+Los planes y estados se guardan fuera del repositorio en
+`%APPDATA%/IARA/WebAgent/agent_framework/`. La copia del plan en el repositorio
+es opcional y, si se solicita, se escribe como `framework_plan.md` (o la ruta
+relativa `.md` elegida) para incluirse en el ciclo verificado. Antes de aprobar,
+el repositorio debe estar limpio, salvo esa copia explícitamente solicitada.
+WebAgent no cambia de rama ni hace push o merge.
+
 ### Gemini, Groq y OpenRouter
 
 Gemini, Groq y OpenRouter aparecen en **Agentes IA** como proveedores

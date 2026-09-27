@@ -32,28 +32,9 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QFont
 
+from core.automation import validate_autorun_command
 from core.file_ops import GitVersioning
 from core.paths import COPILOT_PROFILES_DIR, IA_DATA_DIR
-
-
-AUTORUN_ALLOWED_COMMANDS = {
-    "git", "git.exe", "git.cmd", "npm", "npm.exe", "npm.cmd",
-    "python", "python.exe", "py", "pytest", "pytest.exe",
-    "cargo", "cargo.exe", "go", "go.exe", "dotnet", "dotnet.exe",
-}
-
-
-def validate_autorun_command(command: str) -> tuple[bool, str]:
-    """Valida que autorun ejecute un binario de verificación permitido."""
-    command = command.strip()
-    if not command:
-        return False, "El comando no puede estar vacío."
-    if re.search(r"[;&|<>()`\r\n%]", command) or "$(" in command:
-        return False, "No se permiten operadores, redirecciones ni sustitución de comandos."
-    match = re.match(r"""^\s*(['"]?)([A-Za-z0-9_.-]+)\1(?:\s|$)""", command)
-    if not match or match.group(2).lower() not in AUTORUN_ALLOWED_COMMANDS:
-        return False, "El comando debe comenzar con un verificador permitido (git, npm, python, pytest, cargo, go o dotnet)."
-    return True, ""
 
 
 # ======================================================================
