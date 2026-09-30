@@ -150,7 +150,7 @@ def run_checks(
     folder: str,
     commands: Iterable[str],
     *,
-    timeout_seconds: int = 600,
+    timeout_seconds: int | None = 600,
     output_limit: int = 20_000,
     environment: dict[str, str] | None = None,
     on_output: Callable[[str, str], None] | None = None,
@@ -160,7 +160,7 @@ def run_checks(
     root = Path(folder).resolve()
     if not root.is_dir():
         return [CheckResult("", "configuration_error", error="La carpeta no existe.")]
-    if timeout_seconds <= 0:
+    if timeout_seconds is not None and timeout_seconds <= 0:
         return [CheckResult("", "configuration_error", error="El timeout debe ser mayor que cero.")]
     if output_limit <= 0:
         return [CheckResult("", "configuration_error", error="El límite de salida debe ser mayor que cero.")]
@@ -244,7 +244,10 @@ def run_checks(
                 if cancel_event and cancel_event.is_set():
                     cancelled = True
                     _stop_process(process)
-                if time.monotonic() - started > timeout_seconds:
+                if (
+                    timeout_seconds is not None
+                    and time.monotonic() - started > timeout_seconds
+                ):
                     timed_out = True
                     _stop_process(process)
                 try:

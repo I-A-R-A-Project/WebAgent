@@ -34,7 +34,7 @@ from core.automation import (
     redact_sensitive_text,
     sensitive_environment_values,
 )
-from web_common.tabs import prepare_tab_widget
+from web_common.browser.tabs import prepare_tab_widget
 
 
 # Paleta "terminal oscura" para los inputs y pantallas de salida de la consola.
@@ -858,7 +858,7 @@ class AgentConsolePanel(QWidget):
         config = AgentConfigStore().get(folder)
         command = config["agents"][agent_id].get("command", AGENT_DEFS[agent_id]["default_command"])
         agent_options = config["agents"][agent_id].get("options", {})
-        prompt = task
+        prompt = " ".join(task.split()) if agent_id == "copilot" else task
         resume_id = None
         if continue_requested:
             resume_id = explicit_resume_id or self._resume_id_from_current_tab()
@@ -910,7 +910,7 @@ class AgentConsolePanel(QWidget):
                 self._copilot_session_id = str(uuid.uuid4())
                 argv.extend(["--session-id", self._copilot_session_id])
         if retrying_copilot:
-            prompt = self._copilot_fallback_prompt()
+            prompt = " ".join(self._copilot_fallback_prompt().split())
             argv = [
                 "copilot", "-p", prompt, "--allow-all-tools",
                 "--allow-all-urls",

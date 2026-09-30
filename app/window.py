@@ -42,38 +42,38 @@ from agents.agent_runs import attach_bridge, render_agent_runs_page
 from app.package_script_tab import PackageScriptTab
 from app.linkedin_dialog import LinkedInPublishDialog
 from app.cdp_har import CdpHarWorker
-from web_common.json_store import SidebarAppsStore
-from web_common.history import HistoryDialog, HistoryStore
-from web_common.navbar import BasicNavbar, bind_navigation, save_web_page
-from web_common.navigation import (
+from web_common.storage.json_store import SidebarAppsStore
+from web_common.storage.history import HistoryDialog, HistoryStore
+from web_common.nav.navbar import BasicNavbar, bind_navigation, save_web_page
+from web_common.nav.navigation import (
     active_tab, adjust_zoom, handle_tab_changed, navigate_view, new_tab_page,
     open_default_tab, open_plus_tab, set_zoom, sync_address_bar,
 )
-from web_common.session import (
+from web_common.storage.session import (
     load_tab_session,
     restore_tab_metadata,
     SessionAutoSaver,
     save_tab_session,
 )
-from web_common.sidebar import AppPanelOverlay, SidebarContainer, SidebarRail
-from web_common.local_navigation import (
+from web_common.browser.sidebar import AppPanelOverlay, SidebarContainer, SidebarRail
+from web_common.nav.local_navigation import (
     handle_special_local_file as dispatch_special_local_file,
     open_local_file as choose_local_file,
     open_local_folder as choose_local_folder,
     open_local_target,
     replace_tab_with_epub,
 )
-from web_common.downloader_handoff import handoff_url_to_downloader
-from web_common.tabs import (
+from web_common.downloads.downloader_handoff import handoff_url_to_downloader
+from web_common.browser.tabs import (
     VIDEO_EXTS, UnifiedWebTab, TabbedPopupWindow,
     add_plus_tab, configure_tab_widget, prepare_tab_widget,
     close_tab as close_shared_tab, keep_plus_tab_last, update_tab_icon,
     update_tab_title,
 )
-from web_common.video_tab import VideoTab, open_video_tab as add_video_tab
-from web_common.epub_tab import EpubTab
-from web_common import folder_viewer
-from web_common.web_profiles import build_web_profile
+from web_common.viewers.video_tab import VideoTab, open_video_tab as add_video_tab
+from web_common.viewers.epub_tab import EpubTab
+from web_common.viewers import folder_viewer
+from web_common.browser.web_profiles import build_web_profile
 
 
 class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):

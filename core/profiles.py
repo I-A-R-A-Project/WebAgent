@@ -21,7 +21,7 @@ from PyQt6.QtCore import Qt, QUrl, QTimer
 
 from core.file_ops import GitVersioning
 from core.paths import IA_DATA_DIR
-from web_common.tabs import keep_plus_tab_last
+from web_common.browser.tabs import keep_plus_tab_last
 
 
 # ======================================================================

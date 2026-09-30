@@ -15,7 +15,7 @@ def _ensure_local_imports():
 _ensure_local_imports()
 
 try:
-    from web_common.paths import app_data_dir
+    from web_common.storage.paths import app_data_dir
 except ModuleNotFoundError as exc:  # pragma: no cover - dependency layout check
     raise ModuleNotFoundError(
         "web_common not found. Keep WebAgent and web_common in the same parent directory "

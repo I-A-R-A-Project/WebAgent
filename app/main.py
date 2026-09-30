@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import QApplication
 
 try:
     from app.window import IABrowser
-    from web_common.instance import acquire_browser_instance
+    from web_common.runtime.instance import acquire_browser_instance
 except ModuleNotFoundError as exc:
     if exc.name == "web_common" or "web_common" in str(exc):
         print(

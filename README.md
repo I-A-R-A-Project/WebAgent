@@ -117,7 +117,7 @@ WebAgent no guarda tokens propios ni copia credenciales entre perfiles.
 Desde **Configuración → Framework de tarea...** se puede iniciar un flujo
 guiado de planificación y cambios verificados:
 
-1. Elegí una carpeta de Colección, un agente, la solicitud y los límites.
+1. Elegí una carpeta de Colección, un agente y describí la solicitud.
 2. WebAgent genera un plan Markdown sin editar el repositorio. Revisalo,
    modificalo o pedí una nueva versión antes de aprobarlo.
 3. Al aprobar, el agente implementa un ciclo y WebAgent ejecuta los checks en
@@ -130,18 +130,33 @@ guiado de planificación y cambios verificados:
 El framework usa el comando de autorun configurado para esa carpeta cuando
 está definido; si no, detecta checks según los manifiestos del proyecto. Los
 comandos se validan con la misma lista permitida de autorun. Un repositorio sin
-ningún check confiable queda bloqueado en lugar de considerarse exitoso. El
-límite predeterminado es de 10 ciclos y cada check tiene un timeout de 10
-minutos, ambos ajustables en el diálogo. El modo framework omite el autorun y
-el commit automático normal de la consola; las ejecuciones habituales no
-cambian.
+ningún check confiable queda bloqueado en lugar de considerarse exitoso. No hay
+límite fijo de ciclos ni timeout para los checks. Si el repositorio cambia
+mientras la ejecución espera un ciclo, WebAgent revisa cada cinco segundos
+hasta que los cambios se guarden o descarten; entonces actualiza la base Git y
+continúa. El modo framework omite el autorun y el commit automático normal de
+la consola; las ejecuciones habituales no cambian.
 
 Los planes y estados se guardan fuera del repositorio en
-`%APPDATA%/IARA/WebAgent/agent_framework/`. La copia del plan en el repositorio
-es opcional y, si se solicita, se escribe como `framework_plan.md` (o la ruta
-relativa `.md` elegida) para incluirse en el ciclo verificado. Antes de aprobar,
-el repositorio debe estar limpio, salvo esa copia explícitamente solicitada.
-WebAgent no cambia de rama ni hace push o merge.
+`%APPDATA%/IARA/WebAgent/agent_framework/`. Además, por defecto cada plan se
+guarda como Markdown legible en el repositorio, con un nombre versionado basado
+en la ruta elegida, la ejecución y la versión (por ejemplo,
+`framework_plan_<ejecución>_v1.md`). Las versiones anteriores no se
+sobrescriben. WebAgent extrae y valida las secciones Markdown de la respuesta
+del agente antes de guardarla; no incluye el prompt ni la transcripción de la
+consola en el archivo. El JSON externo conserva el estado y el contenido limpio
+para poder restaurar la ejecución. Antes de aprobar, el repositorio debe estar
+limpio salvo los planes versionados de esa ejecución. WebAgent no cambia de
+rama ni hace push o merge.
+
+El diálogo permite alternar entre una vista previa Markdown formateada y la
+edición del texto fuente; el contenido editado es el que se persiste y se
+aprueba. En los ciclos de Copilot y Codex, WebAgent referencia el archivo de
+plan aprobado en el prompt en vez de repetir todo el Markdown, siempre que el
+archivo exista y coincida con el plan guardado. Gemini, Groq y OpenRouter usan
+APIs de texto sin adjuntos locales en la integración actual, así que reciben el
+plan inline; también se usa ese fallback si el archivo no está disponible o no
+coincide.
 
 ### Gemini, Groq y OpenRouter
 

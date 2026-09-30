@@ -19,9 +19,10 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QSpinBox,
     QTabWidget,
+    QTextBrowser,
     QVBoxLayout,
+    QWidget,
 )
 
 from agents.ai_manager import AGENT_DEFS, AGENT_ORDER
@@ -30,6 +31,9 @@ from core.agent_framework import (
     FrameworkRun,
     FrameworkStatus,
     FrameworkStore,
+    extract_plan_markdown,
+    save_plan_markdown,
+    versioned_plan_path,
 )
 from core.automation import build_framework_check_plan
 from core.file_ops import GitVersioning
@@ -121,17 +125,8 @@ class AgentFrameworkDialog(QDialog):
         form = QFormLayout()
         self.folder_combo = QComboBox()
         self.agent_combo = QComboBox()
-        self.cycle_limit = QSpinBox()
-        self.cycle_limit.setRange(1, 100)
-        self.cycle_limit.setValue(10)
-        self.check_timeout = QSpinBox()
-        self.check_timeout.setRange(1, 3600)
-        self.check_timeout.setValue(600)
-        self.check_timeout.setSuffix(" s")
         form.addRow("Repositorio:", self.folder_combo)
         form.addRow("Agente:", self.agent_combo)
-        form.addRow("Límite de ciclos:", self.cycle_limit)
-        form.addRow("Timeout por check:", self.check_timeout)
         layout.addLayout(form)
 
         self.request_edit = QPlainTextEdit()
@@ -149,9 +144,26 @@ class AgentFrameworkDialog(QDialog):
         layout.addLayout(existing_row)
 
         self.tabs = QTabWidget()
+        plan_page = QWidget()
+        plan_layout = QVBoxLayout(plan_page)
+        plan_layout.setContentsMargins(0, 0, 0, 0)
+        self.plan_views = QTabWidget()
+        self.plan_preview = QTextBrowser()
+        self.plan_preview.setReadOnly(True)
+        self.plan_preview.setOpenExternalLinks(False)
+        self.plan_preview.setOpenLinks(False)
+        self.plan_preview.setPlaceholderText(
+            "La vista previa Markdown del plan aparecerá aquí."
+        )
         self.plan_edit = QPlainTextEdit()
-        self.plan_edit.setPlaceholderText("El plan generado aparecerá aquí; podés editarlo antes de aprobar.")
-        self.tabs.addTab(self.plan_edit, "Plan Markdown")
+        self.plan_edit.setPlaceholderText(
+            "El plan generado aparecerá aquí; podés editarlo antes de aprobar."
+        )
+        self.plan_edit.textChanged.connect(self._refresh_plan_preview)
+        self.plan_views.addTab(self.plan_preview, "Vista previa")
+        self.plan_views.addTab(self.plan_edit, "Editar Markdown")
+        plan_layout.addWidget(self.plan_views)
+        self.tabs.addTab(plan_page, "Plan")
         self.activity_view = QPlainTextEdit()
         self.activity_view.setReadOnly(True)
         self.activity_view.document().setMaximumBlockCount(5000)
@@ -160,11 +172,12 @@ class AgentFrameworkDialog(QDialog):
 
         copy_row = QHBoxLayout()
         self.save_plan_checkbox = QCheckBox(
-            "Guardar una copia aprobada en el repositorio"
+            "Crear versiones Markdown del plan en el repositorio"
         )
         self.plan_path_edit = QLineEdit("framework_plan.md")
         self.plan_path_edit.setEnabled(False)
         self.save_plan_checkbox.toggled.connect(self.plan_path_edit.setEnabled)
+        self.save_plan_checkbox.setChecked(True)
         copy_row.addWidget(self.save_plan_checkbox)
         copy_row.addWidget(self.plan_path_edit, 1)
         layout.addLayout(copy_row)
@@ -206,6 +219,9 @@ class AgentFrameworkDialog(QDialog):
             if self.folder_combo.findData(normalized) < 0:
                 self.folder_combo.addItem(name, normalized)
 
+    def _refresh_plan_preview(self) -> None:
+        self.plan_preview.setMarkdown(self.plan_edit.toPlainText())
+
     def _populate_agents(self) -> None:
         for agent_id in AGENT_ORDER:
             if agent_id in AGENT_DEFS:
@@ -242,8 +258,6 @@ class AgentFrameworkDialog(QDialog):
             folder=folder,
             agent_id=agent_id,
             request=request,
-            max_cycles=self.cycle_limit.value(),
-            check_timeout_seconds=self.check_timeout.value(),
         )
         self.orchestrator = self._make_orchestrator(run)
         run.save(self.store)
@@ -295,13 +309,37 @@ class AgentFrameworkDialog(QDialog):
                 elif not output.strip():
                     self._show_error("El agente devolvió un plan vacío.")
                 else:
-                    self.plan_edit.setPlainText(output.strip())
                     try:
-                        self.orchestrator.set_plan(output.strip())
-                    except (OSError, ValueError, RuntimeError) as exc:
-                        self._show_error(f"No se pudo guardar el plan: {exc}")
+                        plan = extract_plan_markdown(output)
+                    except ValueError as exc:
+                        self._show_error(
+                            f"El agente no devolvió un plan Markdown válido; no se guardó "
+                            f"la respuesta ni el prompt como plan.\n{exc}"
+                        )
                     else:
-                        self._append_activity(f"Plan v{run.plan_version} generado.")
+                        try:
+                            self.orchestrator.set_plan(plan)
+                        except (OSError, ValueError, RuntimeError) as exc:
+                            self._show_error(f"No se pudo guardar el plan local: {exc}")
+                        else:
+                            self.plan_edit.setPlainText(plan)
+                            if self.save_plan_checkbox.isChecked():
+                                try:
+                                    self._write_plan_copy(run, plan)
+                                except (OSError, ValueError, RuntimeError) as exc:
+                                    self._show_error(
+                                        f"El plan limpio quedó guardado en el estado local, "
+                                        f"pero no se pudo crear su archivo Markdown: {exc}"
+                                    )
+                                else:
+                                    self._append_activity(
+                                        f"Plan v{run.plan_version} guardado en "
+                                        f"{run.plan_repo_path}."
+                                    )
+                            else:
+                                self._append_activity(
+                                    f"Plan v{run.plan_version} guardado solo en el estado local."
+                                )
                 self.agent_console.finish_framework_run(run.run_id)
                 self._refresh_status()
 
@@ -351,7 +389,7 @@ class AgentFrameworkDialog(QDialog):
         self.request_edit.clear()
         self.plan_edit.clear()
         self.activity_view.clear()
-        self.save_plan_checkbox.setChecked(False)
+        self.save_plan_checkbox.setChecked(True)
         self.plan_path_edit.setText("framework_plan.md")
         self._refresh_status()
 
@@ -361,12 +399,11 @@ class AgentFrameworkDialog(QDialog):
             return
         run = self.orchestrator.run
         revised_plan = self.plan_edit.toPlainText().strip()
+        self._refresh_plan_preview()
         if not revised_plan:
             self._show_error("El plan no puede estar vacío.")
             return
         try:
-            run.max_cycles = self.cycle_limit.value()
-            run.check_timeout_seconds = self.check_timeout.value()
             if revised_plan != run.plan:
                 self.orchestrator.set_plan(revised_plan)
             if self.save_plan_checkbox.isChecked():
@@ -387,36 +424,58 @@ class AgentFrameworkDialog(QDialog):
     def _write_plan_copy(self, run: FrameworkRun, content: str) -> None:
         if not GitVersioning.has_repo(run.folder):
             raise ValueError("La copia del plan solo puede guardarse en un repositorio Git.")
-        if not GitVersioning.is_clean(run.folder):
-            raise ValueError("Guardá o descartá los cambios existentes antes de copiar el plan al repositorio.")
-        relative = Path(self.plan_path_edit.text().strip())
-        if (
-            not str(relative)
-            or relative.is_absolute()
-            or ".." in relative.parts
-            or relative.suffix.lower() != ".md"
-        ):
+        base_path = self.plan_path_edit.text().strip() or "framework_plan.md"
+        if Path(base_path).suffix.lower() != ".md":
             raise ValueError("La ruta de la copia debe ser relativa y terminar en .md.")
-        if not GitVersioning.check_identity(run.folder):
-            raise ValueError("Git no tiene user.name y user.email configurados.")
-        root = Path(run.folder).resolve()
-        target = (root / relative).resolve()
-        if target == root or root not in target.parents:
-            raise ValueError("La ruta de la copia debe permanecer dentro del repositorio.")
-        if target.exists():
-            raise FileExistsError(
-                f"El archivo {relative} ya existe; no se sobrescribirá."
+        version_record = next(
+            (
+                item for item in reversed(run.plan_versions)
+                if item.get("version") == run.plan_version
+                and item.get("content") == content
+            ),
+            None,
+        )
+        relative_path = (
+            str(version_record.get("repo_path", "")).strip()
+            if version_record else ""
+        )
+        if not relative_path:
+            relative_path = versioned_plan_path(
+                base_path, run.run_id, run.plan_version
             )
+        elif run.plan_repo_path == relative_path:
+            try:
+                if (Path(run.folder) / relative_path).read_text(encoding="utf-8") != content:
+                    raise FileExistsError(
+                        f"El archivo {relative_path} fue modificado y no se sobrescribirá."
+                    )
+            except OSError as exc:
+                raise RuntimeError(
+                    f"No se pudo leer el plan existente {relative_path}: {exc}"
+                ) from exc
+
         ok, _, error = GitVersioning.run(
-            run.folder, ["check-ignore", "--quiet", "--", relative.as_posix()], timeout=10
+            run.folder,
+            ["check-ignore", "--quiet", "--", relative_path],
+            timeout=10,
         )
         if ok:
             raise ValueError("Git ignora la ruta elegida; seleccioná otra ubicación.")
         if error:
             raise RuntimeError(error.strip())
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        run.plan_repo_path = relative.as_posix()
+        orchestrator = self.orchestrator
+        if not GitVersioning.is_clean(run.folder) and not (
+            orchestrator and orchestrator._has_only_approved_plan_file()
+        ):
+            raise ValueError(
+                "Guardá o descartá los cambios ajenos a los planes de esta ejecución "
+                "antes de crear el Markdown."
+            )
+
+        save_plan_markdown(run.folder, relative_path, content)
+        if version_record is not None:
+            version_record["repo_path"] = relative_path
+        run.plan_repo_path = relative_path
         run.save(self.store)
 
     def _start_worker(self) -> None:
@@ -437,13 +496,17 @@ class AgentFrameworkDialog(QDialog):
         worker = self.worker
         if worker is None or worker.run_id != run_id or not worker.isRunning():
             return
+
+        def deliver_result(output: str, exit_code: int) -> None:
+            worker.deliver_agent_result(run_id, output, exit_code)
+
         try:
             self.agent_console.run_framework_task(
                 run_id,
                 agent_id,
                 prompt,
                 folder,
-                worker.deliver_agent_result,
+                deliver_result,
                 profile_id=profile_id,
             )
         except (OSError, RuntimeError, ValueError) as exc:
@@ -499,11 +562,11 @@ class AgentFrameworkDialog(QDialog):
             if run is None:
                 raise FileNotFoundError(f"No se encontró la ejecución {run_id}.")
             self.orchestrator = self._make_orchestrator(run)
-            self.orchestrator.recover_interrupted()
+            self.orchestrator.recover_interrupted(
+                self.agent_console.framework_profile_id()
+            )
             self.request_edit.setPlainText(run.request)
             self.plan_edit.setPlainText(run.plan)
-            self.cycle_limit.setValue(run.max_cycles)
-            self.check_timeout.setValue(run.check_timeout_seconds)
             agent_index = self.agent_combo.findData(run.agent_id)
             if agent_index >= 0:
                 self.agent_combo.setCurrentIndex(agent_index)
@@ -518,8 +581,8 @@ class AgentFrameworkDialog(QDialog):
                 folder_index = self.folder_combo.findData(run.folder)
             if folder_index >= 0:
                 self.folder_combo.setCurrentIndex(folder_index)
-            self.save_plan_checkbox.setChecked(bool(run.plan_repo_path))
-            self.plan_path_edit.setText(run.plan_repo_path or "framework_plan.md")
+            self.save_plan_checkbox.setChecked(True)
+            self.plan_path_edit.setText("framework_plan.md")
             self._render_history()
         except (OSError, RuntimeError, ValueError) as exc:
             self._show_error(f"No se pudo cargar la ejecución: {exc}")
@@ -568,7 +631,7 @@ class AgentFrameworkDialog(QDialog):
         run = self.orchestrator.run if self.orchestrator else None
         if run:
             self.state_label.setText(
-                f"{run.status} · ciclo {run.cycle}/{run.max_cycles}"
+                f"{run.status} · ciclo {run.cycle}"
                 + (f" · {run.last_error}" if run.last_error else "")
             )
             run_index = self.existing_combo.findData(run.run_id)
@@ -584,8 +647,6 @@ class AgentFrameworkDialog(QDialog):
         self.folder_combo.setEnabled(editable)
         self.agent_combo.setEnabled(editable)
         self.request_edit.setEnabled(editable)
-        self.cycle_limit.setEnabled(editable)
-        self.check_timeout.setEnabled(editable)
         self.plan_edit.setReadOnly(
             bool(
                 run
@@ -598,6 +659,7 @@ class AgentFrameworkDialog(QDialog):
             or running
             or self._planning
         )
+        self.plan_edit.setEnabled(not running and not self._planning)
         can_generate = run is None or (
             run.status in {
                 FrameworkStatus.DRAFT.value,

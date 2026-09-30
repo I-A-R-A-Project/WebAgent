@@ -41,7 +41,7 @@ Data persists in `%APPDATA%/IARA/WebAgent/`:
 
 ### Tab Management
 - Tab metadata stored in `self.tab_data[id(webview)]` contains profile_id and collection_id
-- UnifiedWebTab from `web_common.tabs` handles most tab rendering
+- UnifiedWebTab from `web_common.browser.tabs` handles most tab rendering
 - Sidebar panels (AppPanelOverlay, SidebarRail) managed non-modally
 - Download and agent dialogs are kept in lists (`_download_dialogs`, `_agent_dialogs`) to prevent garbage collection
 
