@@ -8,6 +8,8 @@ sus propias sesiones, archivos, cookies, credenciales de agentes y ramas Git.
 ## Para qué sirve
 
 - Navegar sitios web y chats de IA con pestañas.
+- Abrir videos reconocidos por yt-dlp desde el menú contextual de pestaña para
+  reproducirlos y descargarlos con una ubicación elegida por el usuario.
 - Mantener cuentas independientes de Copilot, Codex, GitHub, Claude y Gemini.
 - Rotar entre cuentas cuando una agota sus tokens o cuota disponible.
 - Asociar Colecciones con carpetas de trabajo y URLs necesarias.
@@ -243,6 +245,14 @@ Requisitos básicos:
 ```bash
 pip install -r requirements.txt
 ```
+
+`yt-dlp` queda instalado con las dependencias y habilita el reproductor y
+descargador de video integrado. La reproducción depende de los formatos y
+codecs que admita Qt Multimedia. FFmpeg es un ejecutable externo: agrégalo al
+`PATH`, colócalo junto a `main.py` o define `FFMPEG_LOCATION` con la ruta a
+`ffmpeg.exe`. FFmpeg combina video/audio en vivo para permitir reproducción
+inmediata y transcodifica la vista previa a H.264/AAC para evitar incompatibilidad
+de decodificación AV1; las descargas usan MKV por defecto.
 
 3. Ejecuta la aplicación:
 

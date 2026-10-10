@@ -6,7 +6,6 @@ from pathlib import Path
 
 def _ensure_local_imports():
     """Asegura que el repo y su directorio hermano `web_common` queden en sys.path.
-
     WebAgent espera que `web_common` viva al lado del repositorio actual (por
     ejemplo: `.../IARA/web_common` junto a `.../IARA/WebAgent`). Si se ejecuta
     desde un checkout anidado o con una estructura distinta, esta comprobación

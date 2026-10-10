@@ -72,6 +72,7 @@ from web_common.browser.tabs import (
 )
 from web_common.viewers.video_tab import VideoTab, open_video_tab as add_video_tab
 from web_common.viewers.epub_tab import EpubTab
+from web_common.viewers.yt_dlp_tab import open_yt_dlp_tab
 from web_common.viewers import folder_viewer
 from web_common.browser.web_profiles import build_web_profile
 
@@ -591,6 +592,9 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             current_changed=self._on_tab_changed,
             tab_bar_clicked=lambda index: open_plus_tab(
                 self.tabs, index, self.plus_widget, self._open_new_default_tab
+            ),
+            open_yt_dlp=lambda url: open_yt_dlp_tab(
+                self.tabs, url, self, self.plus_widget
             ),
             direct_right_click=True,
         )
