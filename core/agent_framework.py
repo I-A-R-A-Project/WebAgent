@@ -280,6 +280,8 @@ class FrameworkRun:
     resume_status: str = ""
     created_at: str = field(default_factory=lambda: _now())
     updated_at: str = field(default_factory=lambda: _now())
+    copilot_plan_session_id: str = ""
+    copilot_plan_profile_id: str = ""
 
     def __post_init__(self) -> None:
         if not self.run_id.strip():
@@ -292,6 +294,14 @@ class FrameworkRun:
             raise ValueError("La solicitud supera el máximo de 50.000 caracteres.")
         if self.status not in {status.value for status in FrameworkStatus}:
             raise ValueError(f"Estado de framework desconocido: {self.status}")
+        if self.copilot_plan_session_id and not re.fullmatch(
+            r"[0-9a-f]{32}", self.copilot_plan_session_id
+        ):
+            raise ValueError("El identificador de sesión de Copilot no es válido.")
+        if self.copilot_plan_profile_id and not re.fullmatch(
+            r"[A-Za-z0-9_-]{1,64}", self.copilot_plan_profile_id
+        ):
+            raise ValueError("El identificador de perfil de Copilot no es válido.")
 
     def save(self, store: "FrameworkStore") -> None:
         self.updated_at = _now()

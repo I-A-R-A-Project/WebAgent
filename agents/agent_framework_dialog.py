@@ -37,7 +37,7 @@ from core.agent_framework import (
 )
 from core.automation import build_framework_check_plan
 from core.file_ops import GitVersioning
-from core.paths import IA_DATA_DIR
+from core.paths import COPILOT_PROFILES_DIR, IA_DATA_DIR
 
 
 class FrameworkWorker(QThread):
@@ -109,6 +109,8 @@ class AgentFrameworkDialog(QDialog):
         self.worker: FrameworkWorker | None = None
         self._planning = False
         self._planning_run_id = ""
+        self._interactive_plan_session_id = ""
+        self._interactive_plan_path: Path | None = None
         self.setWindowTitle("Framework de tarea")
         self.resize(900, 720)
         self._build_ui()
@@ -119,6 +121,10 @@ class AgentFrameworkDialog(QDialog):
         self._status_timer.setInterval(300)
         self._status_timer.timeout.connect(self._refresh_status)
         self._status_timer.start()
+        self._plan_artifact_timer = QTimer(self)
+        self._plan_artifact_timer.setInterval(1000)
+        self._plan_artifact_timer.timeout.connect(self._refresh_plan_artifact)
+        self._plan_artifact_timer.start()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -201,6 +207,27 @@ class AgentFrameworkDialog(QDialog):
         ):
             buttons.addWidget(button)
         layout.addLayout(buttons)
+        self.embedded_plan_button = QPushButton("Plan no interactivo")
+        self.embedded_plan_button.clicked.connect(
+            lambda: self._generate_plan(force_embedded=True)
+        )
+        self.import_copilot_plan_button = QPushButton(
+            "Importar plan de Copilot"
+        )
+        self.import_copilot_plan_button.setEnabled(False)
+        self.import_copilot_plan_button.clicked.connect(
+            self._import_copilot_plan
+        )
+        copilot_plan_row = QHBoxLayout()
+        copilot_plan_row.addWidget(self.embedded_plan_button)
+        copilot_plan_row.addWidget(self.import_copilot_plan_button)
+        self.copilot_plan_status = QLabel(
+            "Copilot puede planificar en una terminal del sistema; el plan se "
+            "importa aquí para revisarlo antes de aprobar."
+        )
+        self.copilot_plan_status.setWordWrap(True)
+        copilot_plan_row.addWidget(self.copilot_plan_status, 1)
+        layout.addLayout(copilot_plan_row)
         self.state_label = QLabel("Sin ejecución cargada")
         layout.addWidget(self.state_label)
 
@@ -211,7 +238,11 @@ class AgentFrameworkDialog(QDialog):
         self.pause_button.clicked.connect(self._pause)
         self.resume_button.clicked.connect(self._resume)
         self.cancel_button.clicked.connect(self._cancel)
+        self.agent_combo.currentIndexChanged.connect(
+            self._refresh_plan_controls
+        )
         self._refresh_status()
+        self._refresh_plan_controls()
 
     def _populate_folders(self) -> None:
         for name, folder in self.folder_getter() or []:
@@ -228,6 +259,9 @@ class AgentFrameworkDialog(QDialog):
                 self.agent_combo.addItem(
                     AGENT_DEFS[agent_id].get("short_label", agent_id), agent_id
                 )
+        copilot_index = self.agent_combo.findData("copilot")
+        if copilot_index >= 0:
+            self.agent_combo.setCurrentIndex(copilot_index)
 
     def _populate_existing_runs(self) -> None:
         self.existing_combo.clear()
@@ -282,7 +316,9 @@ class AgentFrameworkDialog(QDialog):
             self.existing_combo.addItem(label, run.run_id)
         self.existing_combo.setCurrentIndex(self.existing_combo.findData(run.run_id))
 
-    def _generate_plan(self, observation: str = "") -> None:
+    def _generate_plan(
+        self, observation: str = "", force_embedded: bool = False
+    ) -> None:
         if self._planning or self._is_worker_running():
             return
         try:
@@ -293,6 +329,15 @@ class AgentFrameworkDialog(QDialog):
             if observation:
                 self.orchestrator.request_revision(observation)
             prompt = self.orchestrator.build_planning_prompt(observation)
+            if run.agent_id == "copilot" and not force_embedded:
+                prompt += (
+                    "\n\nEsta sesión es solo de planificación: usá el modo Plan "
+                    "interactivo, no aceptes ni implementes el plan y no modifiques "
+                    "archivos. Dejá el plan guardado en el archivo de plan de esta "
+                    "sesión para que WebAgent pueda importarlo."
+                )
+                self._start_interactive_copilot_plan(run, prompt)
+                return
             self._planning = True
             self._planning_run_id = run.run_id
             self._append_activity("Generando plan sin editar el repositorio.")
@@ -359,6 +404,126 @@ class AgentFrameworkDialog(QDialog):
                 )
             self._refresh_status()
             self._show_error(str(exc))
+
+    def _start_interactive_copilot_plan(
+        self, run: FrameworkRun, prompt: str
+    ) -> None:
+        profile_id = self.agent_console.framework_profile_id()
+        if not profile_id:
+            raise RuntimeError("No hay un perfil disponible para ejecutar Copilot.")
+        session_id = uuid.uuid4().hex
+        plan_path = (
+            COPILOT_PROFILES_DIR
+            / profile_id
+            / "session-state"
+            / session_id
+            / "plan.md"
+        )
+        run.copilot_plan_session_id = session_id
+        run.copilot_plan_profile_id = profile_id
+        run.save(self.store)
+        try:
+            self.agent_console.launch_framework_copilot_plan(
+                session_id, prompt, run.folder, profile_id
+            )
+        except (OSError, RuntimeError, ValueError):
+            run.copilot_plan_session_id = ""
+            run.copilot_plan_profile_id = ""
+            run.save(self.store)
+            raise
+        self._planning = True
+        self._planning_run_id = run.run_id
+        self._interactive_plan_session_id = session_id
+        self._interactive_plan_path = plan_path
+        self._append_activity(
+            "Se abrió Copilot en modo Plan en una terminal del sistema. "
+            "Cuando termine y el plan esté guardado, importalo desde aquí."
+        )
+        self._refresh_plan_artifact()
+        self._refresh_status()
+
+    def _refresh_plan_artifact(self) -> None:
+        plan_path = self._interactive_plan_path
+        if not self._interactive_plan_session_id or plan_path is None:
+            self.import_copilot_plan_button.setEnabled(False)
+            return
+        try:
+            available = plan_path.is_file() and plan_path.stat().st_size > 0
+        except OSError as exc:
+            self.copilot_plan_status.setText(
+                f"No se pudo revisar el plan de Copilot: {exc}"
+            )
+            self.import_copilot_plan_button.setEnabled(False)
+            return
+        self.import_copilot_plan_button.setEnabled(available)
+        if available:
+            self.copilot_plan_status.setText(
+                "Plan detectado en la sesión de Copilot. Cuando termines de "
+                "revisarlo en la terminal, importalo para validar y editarlo."
+            )
+        else:
+            self.copilot_plan_status.setText(
+                "Esperando que Copilot genere el plan en la terminal interactiva."
+            )
+
+    def _import_copilot_plan(self) -> None:
+        if not self._interactive_plan_path or self.orchestrator is None:
+            return
+        try:
+            if self._interactive_plan_path.stat().st_size > 400_000:
+                raise ValueError("El archivo del plan es demasiado grande.")
+            content = self._interactive_plan_path.read_text(encoding="utf-8")
+            if len(content) > 100_000:
+                raise ValueError("El plan supera el máximo de 100.000 caracteres.")
+            plan = extract_plan_markdown(content)
+            self.orchestrator.set_plan(plan)
+        except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+            self._show_error(
+                "No se pudo importar el plan de Copilot. Dejá abierta la "
+                "terminal para corregirlo y volvé a intentar.\n"
+                f"{exc}"
+            )
+            return
+
+        run = self.orchestrator.run
+        self.plan_edit.setPlainText(plan)
+        self._planning = False
+        self._planning_run_id = ""
+        self._interactive_plan_session_id = ""
+        self._interactive_plan_path = None
+        session_id = run.copilot_plan_session_id
+        profile_id = run.copilot_plan_profile_id
+        run.copilot_plan_session_id = ""
+        run.copilot_plan_profile_id = ""
+        try:
+            run.save(self.store)
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._show_error(
+                "El plan quedó importado localmente, pero no se pudo limpiar "
+                f"el estado de la sesión externa: {exc}"
+            )
+            run.copilot_plan_session_id = session_id
+            run.copilot_plan_profile_id = profile_id
+        if self.save_plan_checkbox.isChecked():
+            try:
+                self._write_plan_copy(run, plan)
+            except (OSError, ValueError, RuntimeError) as exc:
+                self._show_error(
+                    f"El plan quedó guardado en el estado local, pero no se "
+                    f"pudo crear su archivo Markdown: {exc}"
+                )
+            else:
+                self._append_activity(
+                    f"Plan v{run.plan_version} importado y guardado en "
+                    f"{run.plan_repo_path}."
+                )
+        else:
+            self._append_activity(
+                f"Plan v{run.plan_version} importado y guardado solo en el "
+                "estado local."
+            )
+        self._refresh_plan_artifact()
+        self._refresh_status()
 
     def _request_revision(self) -> None:
         if self.orchestrator is None or not self.orchestrator.run.plan:
@@ -530,6 +695,33 @@ class AgentFrameworkDialog(QDialog):
         self._start_worker()
 
     def _cancel(self) -> None:
+        if self._interactive_plan_session_id:
+            if self.orchestrator is not None:
+                run = self.orchestrator.run
+                session_id = run.copilot_plan_session_id
+                profile_id = run.copilot_plan_profile_id
+                run.copilot_plan_session_id = ""
+                run.copilot_plan_profile_id = ""
+                try:
+                    run.save(self.store)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    run.copilot_plan_session_id = session_id
+                    run.copilot_plan_profile_id = profile_id
+                    self._show_error(
+                        f"No se pudo descartar la sesión pendiente: {exc}"
+                    )
+                    return
+            self._planning = False
+            self._planning_run_id = ""
+            self._interactive_plan_session_id = ""
+            self._interactive_plan_path = None
+            self._append_activity(
+                "Se dejó de esperar el plan. La terminal de Copilot sigue "
+                "abierta y puede cerrarse por separado."
+            )
+            self._refresh_plan_artifact()
+            self._refresh_status()
+            return
         if self._planning and self.orchestrator is not None:
             run_id = self._planning_run_id
             self.orchestrator.cancel()
@@ -584,6 +776,34 @@ class AgentFrameworkDialog(QDialog):
             self.save_plan_checkbox.setChecked(True)
             self.plan_path_edit.setText("framework_plan.md")
             self._render_history()
+            if (
+                run.copilot_plan_session_id
+                and run.copilot_plan_profile_id
+                and run.status in {
+                    FrameworkStatus.DRAFT.value,
+                    FrameworkStatus.REVISION_REQUESTED.value,
+                }
+            ):
+                self._interactive_plan_session_id = (
+                    run.copilot_plan_session_id
+                )
+                self._interactive_plan_path = (
+                    COPILOT_PROFILES_DIR
+                    / run.copilot_plan_profile_id
+                    / "session-state"
+                    / run.copilot_plan_session_id
+                    / "plan.md"
+                )
+                self._planning_run_id = run.run_id
+                self._planning = True
+                self._append_activity(
+                    "Se recuperó una sesión interactiva de Copilot pendiente; "
+                    "importá el plan cuando esté listo."
+                )
+            elif run.copilot_plan_session_id or run.copilot_plan_profile_id:
+                run.copilot_plan_session_id = ""
+                run.copilot_plan_profile_id = ""
+                run.save(self.store)
         except (OSError, RuntimeError, ValueError) as exc:
             self._show_error(f"No se pudo cargar la ejecución: {exc}")
         self._refresh_status()
@@ -706,6 +926,31 @@ class AgentFrameworkDialog(QDialog):
         )
         if self._planning:
             self.cancel_button.setEnabled(True)
+            if self._interactive_plan_session_id:
+                self.cancel_button.setText("Dejar de esperar")
+            else:
+                self.cancel_button.setText("Cancelar")
+        else:
+            self.cancel_button.setText("Cancelar")
+        self.generate_button.setText(
+            "Plan interactivo" if self.agent_combo.currentData() == "copilot"
+            else "Generar plan"
+        )
+        self.embedded_plan_button.setVisible(
+            self.agent_combo.currentData() == "copilot"
+        )
+        self.import_copilot_plan_button.setVisible(
+            self.agent_combo.currentData() == "copilot"
+        )
+        self.copilot_plan_status.setVisible(
+            self.agent_combo.currentData() == "copilot"
+        )
+        self.embedded_plan_button.setEnabled(
+            not running and not self._planning and can_generate
+        )
+
+    def _refresh_plan_controls(self) -> None:
+        self._refresh_status()
 
     def _is_worker_running(self) -> bool:
         return self.worker is not None

@@ -120,12 +120,18 @@ Desde **Configuración → Framework de tarea...** se puede iniciar un flujo
 guiado de planificación y cambios verificados:
 
 1. Elegí una carpeta de Colección, un agente y describí la solicitud.
-2. WebAgent genera un plan Markdown sin editar el repositorio. Revisalo,
-   modificalo o pedí una nueva versión antes de aprobarlo.
-3. Al aprobar, el agente implementa un ciclo y WebAgent ejecuta los checks en
+2. Con Copilot, **Plan interactivo** abre el modo Plan del CLI en una terminal
+   del sistema. Cuando el plan esté listo, importalo desde la ventana para
+   revisarlo o editarlo antes de aprobarlo; no apruebes allí la implementación.
+   **Plan no interactivo** conserva el flujo anterior; los demás agentes siguen
+   usando ese flujo. La sesión pendiente se asocia con la ejecución y puede
+   recuperarse cargándola si se cierra WebAgent antes de importar el plan.
+3. WebAgent valida y guarda el plan Markdown sin ejecutar su implementación.
+   Revisalo, modificalo o pedí una nueva versión antes de aprobarlo.
+4. Al aprobar, el agente implementa un ciclo y WebAgent ejecuta los checks en
    secuencia. Si fallan, el error vuelve al agente; si pasan, WebAgent crea un
    commit no vacío antes de continuar.
-4. La ejecución termina con la señal estructurada de finalización del agente y
+5. La ejecución termina con la señal estructurada de finalización del agente y
    una última verificación exitosa. También se puede pausar al terminar el
    ciclo actual, cancelar o reanudar una ejecución persistida.
 
@@ -150,6 +156,12 @@ consola en el archivo. El JSON externo conserva el estado y el contenido limpio
 para poder restaurar la ejecución. Antes de aprobar, el repositorio debe estar
 limpio salvo los planes versionados de esa ejecución. WebAgent no cambia de
 rama ni hace push o merge.
+
+El modo Plan interactivo usa el `COPILOT_HOME` y, si está configurado, el token
+del perfil seleccionado en WebAgent; no hereda credenciales de Copilot de otros
+perfiles. El plan nativo de la sesión se detecta bajo ese `COPILOT_HOME` y se
+importa solo después de validarlo. Detener la espera desde WebAgent no cierra la
+terminal externa; cerrala por separado cuando termines.
 
 El diálogo permite alternar entre una vista previa Markdown formateada y la
 edición del texto fuente; el contenido editado es el que se persiste y se

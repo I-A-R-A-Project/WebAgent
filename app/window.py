@@ -29,6 +29,7 @@ from PyQt6.QtGui import (
 )
 
 from core.file_ops import GitVersioning
+from core.paths import IA_DATA_DIR
 from core.profiles import ProfileManager, ProfileWindowMixin
 from core.collections_manager import CollectionManager, CollectionWindowMixin
 from core.downloads import DownloadDialog
@@ -63,7 +64,11 @@ from web_common.nav.local_navigation import (
     open_local_target,
     replace_tab_with_epub,
 )
-from web_common.downloads.downloader_handoff import handoff_url_to_downloader
+from web_common.downloads.browser_downloads import (
+    BrowserCookieStore,
+    BrowserDownloadTracker,
+    BrowserDownloadsDialog,
+)
 from web_common.browser.tabs import (
     VIDEO_EXTS, UnifiedWebTab, TabbedPopupWindow,
     add_plus_tab, configure_tab_widget, prepare_tab_widget,
@@ -96,11 +101,22 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             str(BROWSER_DATA_DIR / "sidebar_apps.json"), []
         )
         self.web_engine_profiles: dict[str, QWebEngineProfile] = {}
+        self.browser_cookie_stores: dict[str, BrowserCookieStore] = {}
         self.current_profile_id = self.profile_manager.profiles[0]["id"]
         self.history = HistoryStore(str(self.profile_manager.base_dir / "history.db"))
         self.history_session_id = self.history.new_session_id()
         self.session_file = self.profile_manager.base_dir / "session.json"
         self.session_autosaver = SessionAutoSaver(self._save_session)
+        self.browser_download_tracker = BrowserDownloadTracker(
+            IA_DATA_DIR / "browser_download_ids.json"
+        )
+        self._handled_browser_downloads = set()
+        self._download_completion_warning = None
+        self._download_completion_timer = QTimer(self)
+        self._download_completion_timer.timeout.connect(
+            self._process_browser_download_completions
+        )
+        self._download_completion_timer.start(1500)
 
         # Metadata por pestaña: id(webview) -> {"profile_id":.., "collection_id": .. or None}
         self.tab_data: dict[int, dict] = {}
@@ -234,19 +250,24 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             data["cache_path"],
             download_path=self.profile_manager.get_files_dir(),
         )
-        qt_profile.downloadRequested.connect(self._on_download_requested)
+        qt_profile.downloadRequested.connect(
+            lambda download, pid=profile_id: self._on_download_requested(download, pid)
+        )
 
         self.web_engine_profiles[profile_id] = qt_profile
+        self.browser_cookie_stores[profile_id] = BrowserCookieStore(qt_profile)
         return qt_profile
 
-    def _on_download_requested(self, download: "QWebEngineDownloadRequest"):
+    def _on_download_requested(
+        self, download: "QWebEngineDownloadRequest", profile_id: str | None = None
+    ):
         """Resuelve la carpeta de descarga (Colección activa o perfil de la
         pestaña) y abre el diálogo de descarga para que el usuario
         confirme nombre, reemplazo y extracción antes de arrancar."""
         webview = self.current_webview()
         tab_meta = self.tab_data.get(id(webview), {}) if webview else {}
         collection_id = tab_meta.get("collection_id")
-        profile_id = tab_meta.get("profile_id", self.current_profile_id)
+        profile_id = profile_id or tab_meta.get("profile_id", self.current_profile_id)
 
         target_dir, _ = self._resolve_target_folder(tab_meta)
 
@@ -262,7 +283,7 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
             git_versioning = bool(profile_data and profile_data.get("git_versioning"))
 
         filename = Path(download.downloadFileName()).name
-
+        cookie_store = self.browser_cookie_stores.get(profile_id)
         if git_versioning and GitVersioning.is_available():
             switched, branch = GitVersioning.ensure_profile_branch(target_dir, profile_id, raw=True)
             if not switched:
@@ -275,6 +296,34 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
                 )
                 return
             self.statusBar().showMessage(f"Descarga aislada en rama {branch}", 5000)
+
+        status, message = self.browser_download_tracker.submit_url(
+            download.url().toString(),
+            __file__,
+            path=target_dir,
+            title=filename,
+            auth_cookies=cookie_store.cookies_for_url(download.url().toString())
+            if cookie_store else [],
+            auth_headers=cookie_store.headers_for_download(
+                webview.url().toString()
+                if webview and webview.url().isValid()
+                else ""
+            ) if cookie_store else {},
+            metadata={
+                "profile_id": profile_id,
+                "target_dir": str(target_dir),
+                "filename": filename,
+                "git_versioning": True,
+            } if git_versioning and GitVersioning.is_available() else None,
+        )
+        if status == "sent":
+            download.cancel()
+            self.statusBar().showMessage(message, 5000)
+            return
+        if status == "error":
+            download.cancel()
+            QMessageBox.warning(self, "Error al enviar descarga", message)
+            return
 
         dialog = DownloadDialog(
             self, download, target_dir, filename,
@@ -289,6 +338,45 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
+
+    def _process_browser_download_completions(self):
+        try:
+            entries = self.browser_download_tracker.get_entries()
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            message = f"No se pudo revisar el estado de descargas: {exc}"
+            if message != self._download_completion_warning:
+                self.statusBar().showMessage(message, 10000)
+                self._download_completion_warning = message
+            return
+
+        self._download_completion_warning = None
+        for entry in entries:
+            metadata = entry.get("_browser_metadata", {})
+            entry_id = entry.get("id")
+            if (
+                not entry_id
+                or entry_id in self._handled_browser_downloads
+                or not metadata.get("git_versioning")
+                or entry.get("status") != "finished"
+                or entry.get("extract_status") == "running"
+            ):
+                continue
+
+            self._handled_browser_downloads.add(entry_id)
+            self._handle_download_finished(
+                metadata["target_dir"],
+                metadata["filename"],
+                entry.get("extract_status") == "done",
+                True,
+                metadata.get("profile_id"),
+            )
+            try:
+                self.browser_download_tracker.clear_metadata(entry_id)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                self.statusBar().showMessage(
+                    f"No se pudo limpiar el seguimiento de descarga: {exc}",
+                    10000,
+                )
 
     def _forget_download_dialog(self, dialog):
         if dialog in self._download_dialogs:
@@ -640,6 +728,12 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         send_action.setToolTip("Enviar URL actual al Downloader")
         send_action.triggered.connect(self.send_current_url_to_downloader)
         navbar.addAction(send_action)
+
+        downloads_action = QAction("📥", navbar)
+        downloads_action.setToolTip("Ver descargas enviadas al Downloader")
+        downloads_action.setShortcut(QKeySequence("Ctrl+J"))
+        downloads_action.triggered.connect(self.show_downloads)
+        navbar.addAction(downloads_action)
         
         # Agregar botones específicos de IA
         self.collection_action = QAction("☆", navbar)
@@ -668,13 +762,32 @@ class IABrowser(ProfileWindowMixin, CollectionWindowMixin, QMainWindow):
         webview = self.current_webview()
         tab_meta = self.tab_data.get(id(webview), {}) if webview else {}
         folder, _ = self._resolve_target_folder(tab_meta)
-        handoff_url_to_downloader(
+        profile_id = tab_meta.get("profile_id", self.current_profile_id)
+        cookie_store = self.browser_cookie_stores.get(profile_id)
+        status, message = self.browser_download_tracker.submit_url(
             webview.url().toString() if webview else "",
             __file__,
             path=folder,
             title=webview.title() if webview else "",
-            status_callback=self.statusBar().showMessage,
+            auth_cookies=cookie_store.cookies_for_url(webview.url().toString())
+            if webview and cookie_store else [],
+            auth_headers=cookie_store.headers_for_download(
+                webview.url().toString()
+                if webview and webview.url().isValid()
+                else ""
+            ) if cookie_store else {},
         )
+        self.statusBar().showMessage(message, 7000 if status == "error" else 5000)
+
+    def show_downloads(self):
+        dialog = BrowserDownloadsDialog(self.browser_download_tracker, parent=self)
+        self._download_dialogs.append(dialog)
+        dialog.finished.connect(
+            lambda _result=None, current=dialog: self._forget_download_dialog(current)
+        )
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     # ------------------------------------------------------------------
     # Tabs

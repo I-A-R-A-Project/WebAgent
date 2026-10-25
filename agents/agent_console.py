@@ -720,8 +720,8 @@ class AgentConsolePanel(QWidget):
         with self._log_file.open("a", encoding="utf-8") as stream:
             stream.write(text)
 
-    def _environment(self, agent_id):
-        profile_id = self._profile_id()
+    def _environment(self, agent_id, profile_id=None):
+        profile_id = profile_id or self._profile_id()
         if not profile_id:
             return None
         folder = self._working_folder()
@@ -746,6 +746,86 @@ class AgentConsolePanel(QWidget):
         if agent_id == "groq" and token:
             environment.insert("GROQ_API_KEY", token)
         return environment
+
+    def launch_framework_copilot_plan(
+        self, session_id: str, prompt: str, folder: str, profile_id: str
+    ) -> None:
+        """Abre Copilot en modo Plan usando el entorno aislado del perfil elegido."""
+        if self._has_active_execution():
+            raise RuntimeError(
+                "Esperá a que termine la ejecución activa antes de abrir Copilot Plan."
+            )
+        if not re.fullmatch(r"[0-9a-f]{32}", session_id):
+            raise ValueError("El identificador de sesión de Copilot no es válido.")
+        if not profile_id:
+            raise RuntimeError("No hay un perfil disponible para ejecutar Copilot.")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", profile_id):
+            raise ValueError("El identificador de perfil de Copilot no es válido.")
+        if not self.select_directory(folder):
+            raise ValueError(f"Directorio inexistente: {folder}")
+
+        copilot_path = shutil.which("copilot.ps1") or shutil.which("copilot")
+        if copilot_path is None:
+            raise FileNotFoundError("No se encontró el comando de Copilot CLI.")
+        if Path(copilot_path).suffix.lower() in {".bat", ".cmd"}:
+            powershell_shim = Path(copilot_path).with_suffix(".ps1")
+            if powershell_shim.is_file():
+                copilot_path = str(powershell_shim)
+        powershell_path = shutil.which("powershell.exe") or shutil.which("powershell")
+        if powershell_path is None:
+            raise FileNotFoundError("No se encontró Windows PowerShell.")
+        launcher = Path(__file__).resolve().with_name(
+            "copilot_plan_terminal.ps1"
+        )
+        if not launcher.is_file():
+            raise FileNotFoundError(f"No se encontró el lanzador: {launcher}")
+
+        environment = self._environment("copilot", profile_id)
+        if environment is None:
+            raise RuntimeError("No se pudo preparar el entorno del perfil de Copilot.")
+        environment.remove("BROWSER")
+
+        session_dir = (
+            COPILOT_PROFILES_DIR / profile_id / "session-state" / session_id
+        )
+        session_dir.mkdir(parents=True, exist_ok=True)
+        config_path = session_dir / "webagent-plan-launch.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "copilot_path": copilot_path,
+                    "session_id": session_id,
+                    "prompt": prompt,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        process = QProcess(self)
+        process.setWorkingDirectory(folder)
+        process.setProcessEnvironment(environment)
+        process.setProgram(powershell_path)
+        process.setArguments(
+            [
+                "-NoLogo",
+                "-NoExit",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(launcher),
+                str(config_path),
+            ]
+        )
+        try:
+            started, _pid = process.startDetached()
+        except RuntimeError:
+            config_path.unlink(missing_ok=True)
+            raise
+        if not started:
+            config_path.unlink(missing_ok=True)
+            raise RuntimeError("No se pudo abrir la terminal interactiva de Copilot.")
 
     def run_agent(
         self,
